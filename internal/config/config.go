@@ -66,7 +66,7 @@ type File struct {
 
 const (
 	DefaultListen   = "127.0.0.1:8080"
-	DefaultAuditLog = "toolhost-audit.jsonl"
+	DefaultAuditLog = "toolhost_audit.jsonl"
 )
 
 func Load(path string) (*File, error) {

@@ -24,7 +24,7 @@ $EDITOR toolhost.json           # add your backends (stdio or http)
 ./toolhost discover             # every tool your backends expose, qualified
 ./toolhost approve fs__read_file fs__list_directory
 ./toolhost serve                # http://127.0.0.1:8080/mcp — Authorization: Bearer <token>
-cat toolhost-audit.jsonl        # every call, identified and timed
+cat toolhost_audit.jsonl        # every call, identified and timed
 ```
 
 Config — three transports × four upstream auth modes:
@@ -33,7 +33,7 @@ Config — three transports × four upstream auth modes:
 {
   "listen": "127.0.0.1:8080",
   "token": "th_…",
-  "audit_log": "toolhost-audit.jsonl",
+  "audit_log": "toolhost_audit.jsonl",
   "backends": {
     "fs":      { "transport": "stdio", "command": "npx",
                  "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"] },

@@ -6,7 +6,7 @@
 # calls, the token store carries upstream OAuth grants — all credentials.
 /toolhost.json
 /toolhost.tokens.json
-/*-audit.jsonl
+/*_audit.jsonl
 /audit.jsonl
 
 # Binaries and OS noise.
