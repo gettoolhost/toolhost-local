@@ -30,6 +30,15 @@ type Upstream interface {
 	Close() error
 }
 
+// ToolInfo is one catalog entry — a discovered tool plus its governance
+// state, as reported by the gateway's own toolhost__* meta-tools.
+type ToolInfo struct {
+	Qualified   string `json:"qualified"`
+	Description string `json:"description,omitempty"`
+	Approved    bool   `json:"approved"`
+	Enabled     bool   `json:"enabled"`
+}
+
 // Event is one governed action's evidence — the driven audit port.
 type Event struct {
 	TS      time.Time `json:"ts"`
@@ -54,4 +63,5 @@ const (
 	EventBackendError  = "backend_error"
 	EventToolForbidden = "tool_forbidden"
 	EventReload        = "reload"
+	EventGovern        = "govern"
 )

@@ -9,6 +9,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -97,7 +99,7 @@ func TestGovernedCallEndToEnd(t *testing.T) {
 		t.Fatalf("resolve: want exactly up__echo, got %+v", res.Tools)
 	}
 
-	fd, err := frontdoor.New(res, cfg.Token, sink)
+	fd, err := frontdoor.New(res, cfg.Token, sink, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,6 +226,146 @@ func TestResolveEnabledSubset(t *testing.T) {
 	}
 	if len(res.Tools) != 1 || res.Tools[0].Qualified != "a__x" {
 		t.Fatalf("enabled={x,y} approved={x}: want exactly a__x, got %+v", res.Tools)
+	}
+}
+
+// The gateway's own toolhost__* control plane, over a real Serve: the agent
+// searches the catalog, enables an approved-but-disabled tool, calls it
+// through the escape hatch, and disables it again — all inside the session.
+func TestMetaToolsEndToEnd(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	up := fixtureUpstream(t)
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "toolhost.json")
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := l.Addr().String()
+	_ = l.Close()
+
+	enabled := []string{"up__echo"}
+	cfg := &config.File{
+		Token:    "test-token",
+		Listen:   addr,
+		AuditLog: filepath.Join(dir, "audit.jsonl"),
+		Backends: map[string]*config.Backend{
+			"up": {Transport: "http", URL: up.URL},
+		},
+		Approved: []string{"up__echo", "up__secret"},
+		Enabled:  &enabled,
+	}
+	if err := cfg.Save(cfgPath); err != nil {
+		t.Fatal(err)
+	}
+
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- app.Serve(ctx, cfgPath, io.Discard) }()
+	defer func() {
+		cancel()
+		if err := <-serveDone; err != nil {
+			t.Fatalf("serve: %v", err)
+		}
+	}()
+
+	// Wait for the listener.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := http.Get("http://" + addr + "/healthz"); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("serve never came up")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0"}, nil)
+	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
+		Endpoint:   "http://" + addr + "/mcp",
+		HTTPClient: &http.Client{Transport: authTransport{token: "test-token"}},
+	}, nil)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer session.Close()
+
+	listed, err := session.ListTools(ctx, &mcp.ListToolsParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, tl := range listed.Tools {
+		names[tl.Name] = true
+	}
+	for _, want := range []string{"up__echo", "toolhost__search", "toolhost__list", "toolhost__call", "toolhost__enable", "toolhost__disable"} {
+		if !names[want] {
+			t.Fatalf("surface missing %q — got %v", want, names)
+		}
+	}
+	if names["up__secret"] {
+		t.Fatal("disabled tool leaked into the surface")
+	}
+
+	call := func(name string, args map[string]any) *mcp.CallToolResult {
+		t.Helper()
+		res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: args})
+		if err != nil {
+			t.Fatalf("call %s: %v", name, err)
+		}
+		return res
+	}
+	text := func(res *mcp.CallToolResult) string {
+		return res.Content[0].(*mcp.TextContent).Text
+	}
+
+	// Search finds the disabled tool with its governance state.
+	res := call("toolhost__search", map[string]any{"query": "secret"})
+	if res.IsError || !strings.Contains(text(res), "up__secret") {
+		t.Fatalf("search for secret: %v", text(res))
+	}
+
+	// The escape hatch refuses a disabled tool — with the remedy.
+	res = call("toolhost__call", map[string]any{"name": "up__secret", "arguments": map[string]any{}})
+	if !res.IsError || !strings.Contains(text(res), "approved but disabled") {
+		t.Fatalf("call disabled tool: want precise refusal, got %v", text(res))
+	}
+
+	// Agent enables it at runtime — approval gate holds for unknown names.
+	res = call("toolhost__enable", map[string]any{"names": []string{"up__nope"}})
+	if !res.IsError || !strings.Contains(text(res), "not approved") {
+		t.Fatalf("enable unapproved: want refusal, got %v", text(res))
+	}
+	res = call("toolhost__enable", map[string]any{"names": []string{"up__secret"}})
+	if res.IsError {
+		t.Fatalf("enable approved: %v", text(res))
+	}
+
+	// Callable via the meta escape hatch without waiting for list_changed.
+	res = call("toolhost__call", map[string]any{"name": "up__secret", "arguments": map[string]any{}})
+	if res.IsError || text(res) != "leaked" {
+		t.Fatalf("call newly-enabled tool: got %v", text(res))
+	}
+
+	// The enablement persisted to the config — same file the CLI edits.
+	reloaded, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reloaded.IsEnabled("up__secret") {
+		t.Fatal("agent enable did not persist to toolhost.json")
+	}
+
+	// And back off again — runtime governance in both directions.
+	res = call("toolhost__disable", map[string]any{"names": []string{"up__secret"}})
+	if res.IsError {
+		t.Fatalf("disable: %v", text(res))
+	}
+	res = call("toolhost__call", map[string]any{"name": "up__secret", "arguments": map[string]any{}})
+	if !res.IsError {
+		t.Fatal("disabled tool still callable via toolhost__call")
 	}
 }
 

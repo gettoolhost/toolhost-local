@@ -107,6 +107,9 @@ func (f *File) applyDefaults() {
 
 func (f *File) validate() error {
 	for name, b := range f.Backends {
+		if name == "toolhost" {
+			return fmt.Errorf("backend name %q is reserved for the gateway's own tools", name)
+		}
 		if err := namespace.ValidateNamespace(name); err != nil {
 			return fmt.Errorf("backend name %q: %w", name, err)
 		}

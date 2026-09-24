@@ -15,12 +15,15 @@ import (
 	"os"
 	"reflect"
 	"sort"
+	"strings"
+	"sync"
 	"time"
 
 	"toolhost/internal/audit"
 	"toolhost/internal/config"
 	"toolhost/internal/core"
 	"toolhost/internal/frontdoor"
+	"toolhost/internal/namespace"
 	"toolhost/internal/oauth"
 	"toolhost/internal/upstream"
 )
@@ -300,12 +303,10 @@ func Serve(ctx context.Context, path string, w io.Writer) error {
 		fmt.Fprintf(w, "skipped %s__%s: %s\n", s.Backend, s.Tool, s.Reason)
 	}
 
-	srv, err := frontdoor.New(res, f.Token, sink)
-	if err != nil {
-		return err
-	}
-
 	live := &liveSet{
+		path:  path,
+		sink:  sink,
+		w:     w,
 		ups:   map[string]core.Upstream{},
 		cfgs:  map[string]*config.Backend{},
 		opts:  &upstream.Options{Tokens: tokens, Out: io.Discard},
@@ -317,7 +318,13 @@ func Serve(ctx context.Context, path string, w io.Writer) error {
 	for name, cfg := range f.Backends {
 		live.cfgs[name] = cfg
 	}
-	go live.watch(ctx, path, srv, sink, w)
+
+	srv, err := frontdoor.New(res, f.Token, sink, live.meta())
+	if err != nil {
+		return err
+	}
+	live.fd = srv
+	go live.watch(ctx)
 
 	httpSrv := &http.Server{Addr: f.Listen, Handler: srv.Handler()}
 	go func() {
@@ -337,9 +344,15 @@ func Serve(ctx context.Context, path string, w io.Writer) error {
 
 // liveSet is the currently-served backend pool: sessions keyed by namespace
 // plus the config that produced each, so a reload keeps unchanged sessions
-// and re-dials only what changed. Owned by the watch goroutine after Serve
-// builds it — no mutex needed.
+// and re-dials only what changed. mu serializes the watch goroutine and the
+// toolhost__* meta-tool handlers — both mutate the pool.
 type liveSet struct {
+	mu   sync.Mutex
+	path string
+	fd   *frontdoor.Server
+	sink core.AuditSink
+	w    io.Writer
+
 	ups  map[string]core.Upstream
 	cfgs map[string]*config.Backend
 	opts *upstream.Options
@@ -356,10 +369,10 @@ type liveSet struct {
 // surface; the failure is logged and audited. Saving config via any
 // toolhost command is atomic, so a torn file is only ever a hand-edit mid-
 // write — the next tick retries.
-func (l *liveSet) watch(ctx context.Context, path string, fd *frontdoor.Server, sink core.AuditSink, w io.Writer) {
+func (l *liveSet) watch(ctx context.Context) {
 	var mod time.Time
 	var size int64
-	if fi, err := os.Stat(path); err == nil {
+	if fi, err := os.Stat(l.path); err == nil {
 		mod, size = fi.ModTime(), fi.Size()
 	}
 	tick := time.NewTicker(1500 * time.Millisecond)
@@ -370,25 +383,29 @@ func (l *liveSet) watch(ctx context.Context, path string, fd *frontdoor.Server, 
 			return
 		case <-tick.C:
 		}
-		fi, err := os.Stat(path)
+		fi, err := os.Stat(l.path)
 		if err != nil || (fi.ModTime() == mod && fi.Size() == size) {
 			continue
 		}
 		mod, size = fi.ModTime(), fi.Size()
-		l.reload(ctx, path, fd, sink, w)
+		l.mu.Lock()
+		l.reload(ctx)
+		l.mu.Unlock()
 	}
 }
 
-func (l *liveSet) reload(ctx context.Context, path string, fd *frontdoor.Server, sink core.AuditSink, w io.Writer) {
+// reload re-reads the config, re-dials only changed backends, and swaps the
+// served surface. Callers hold l.mu.
+func (l *liveSet) reload(ctx context.Context) {
 	log := slog.Default()
-	f, err := config.Load(path)
+	f, err := config.Load(l.path)
 	if err != nil {
 		log.Warn("reload: invalid config — keeping current surface", "err", err)
-		sink.Record(core.Event{TS: time.Now(), Kind: core.EventReload, Err: err.Error()})
+		l.sink.Record(core.Event{TS: time.Now(), Kind: core.EventReload, Err: err.Error()})
 		return
 	}
 	if f.Token != l.token || f.Listen != l.listen || f.AuditLog != l.auditLog {
-		fmt.Fprintln(w, "reload: listen/token/audit_log changes take effect on restart — keeping current values")
+		fmt.Fprintln(l.w, "reload: listen/token/audit_log changes take effect on restart — keeping current values")
 	}
 
 	var ups []core.Upstream
@@ -407,7 +424,7 @@ func (l *liveSet) reload(ctx context.Context, path string, fd *frontdoor.Server,
 		cancel()
 		if err != nil {
 			log.Warn("reload: backend unavailable", "backend", name, "err", err)
-			sink.Record(core.Event{TS: time.Now(), Kind: core.EventBackendError, Backend: name, Err: "reload: " + err.Error()})
+			l.sink.Record(core.Event{TS: time.Now(), Kind: core.EventBackendError, Backend: name, Err: "reload: " + err.Error()})
 		} else {
 			l.ups[name] = up
 			ups = append(ups, up)
@@ -426,15 +443,144 @@ func (l *liveSet) reload(ctx context.Context, path string, fd *frontdoor.Server,
 	res, err := core.Resolve(ups, f.ApprovedSet(), enabledSet)
 	if err != nil {
 		log.Warn("reload: resolve failed — keeping current surface", "err", err)
-		sink.Record(core.Event{TS: time.Now(), Kind: core.EventReload, Err: err.Error()})
+		l.sink.Record(core.Event{TS: time.Now(), Kind: core.EventReload, Err: err.Error()})
 		return
 	}
 	for _, s := range res.Skipped {
-		sink.Record(core.Event{TS: time.Now(), Kind: core.EventBackendError, Backend: s.Backend, Tool: s.Tool, Err: "skipped: " + s.Reason})
+		l.sink.Record(core.Event{TS: time.Now(), Kind: core.EventBackendError, Backend: s.Backend, Tool: s.Tool, Err: "skipped: " + s.Reason})
 	}
-	fd.Reload(res)
-	sink.Record(core.Event{TS: time.Now(), Kind: core.EventReload})
-	fmt.Fprintf(w, "reloaded: %d tools serving\n", len(res.Tools))
+	l.fd.Reload(res)
+	l.sink.Record(core.Event{TS: time.Now(), Kind: core.EventReload})
+	fmt.Fprintf(l.w, "reloaded: %d tools serving\n", len(res.Tools))
+}
+
+// meta exposes the liveSet as the gateway's own control plane — the
+// toolhost__* tools an agent calls to discover and govern its surface at
+// runtime. Enable/Disable write through to the config file, so an agent's
+// choices persist exactly like the CLI's.
+func (l *liveSet) meta() *frontdoor.Meta {
+	return &frontdoor.Meta{
+		Search:  l.metaSearch,
+		List:    l.metaList,
+		Enable:  l.metaEnable,
+		Disable: l.metaDisable,
+		Status:  l.metaStatus,
+	}
+}
+
+// catalog is every discovered tool with its governance state. Callers hold
+// l.mu.
+func (l *liveSet) catalog() []core.ToolInfo {
+	f, err := config.Load(l.path)
+	if err != nil {
+		return nil
+	}
+	approved := f.ApprovedSet()
+	enSet, hasEn := f.EnabledSet()
+	var out []core.ToolInfo
+	for _, ns := range sortedKeys(l.ups) {
+		for _, t := range l.ups[ns].Tools() {
+			q, err := namespace.Join(ns, t.Name)
+			if err != nil {
+				continue
+			}
+			out = append(out, core.ToolInfo{
+				Qualified:   q,
+				Description: t.Description,
+				Approved:    approved[q],
+				Enabled:     approved[q] && (!hasEn || enSet[q]),
+			})
+		}
+	}
+	return out
+}
+
+func (l *liveSet) metaSearch(_ context.Context, query string) ([]core.ToolInfo, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	query = strings.ToLower(query)
+	var hits []core.ToolInfo
+	for _, info := range l.catalog() {
+		if query == "" || strings.Contains(strings.ToLower(info.Qualified), query) ||
+			strings.Contains(strings.ToLower(info.Description), query) {
+			hits = append(hits, info)
+		}
+	}
+	return hits, nil
+}
+
+func (l *liveSet) metaList(_ context.Context, scope string) ([]core.ToolInfo, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []core.ToolInfo
+	for _, info := range l.catalog() {
+		switch scope {
+		case "", "enabled":
+			if info.Enabled {
+				out = append(out, info)
+			}
+		case "approved":
+			if info.Approved {
+				out = append(out, info)
+			}
+		case "all":
+			out = append(out, info)
+		default:
+			return nil, fmt.Errorf("scope must be \"enabled\", \"approved\" or \"all\", got %q", scope)
+		}
+	}
+	return out, nil
+}
+
+// metaEnable is the agent-facing enable: same gate as the CLI (approved
+// only), same file, then an immediate reload so the surface reflects it.
+func (l *liveSet) metaEnable(ctx context.Context, names []string) ([]string, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	f, err := config.Load(l.path)
+	if err != nil {
+		return nil, err
+	}
+	changed, err := f.Enable(names...)
+	if err != nil {
+		return nil, err
+	}
+	if err := f.Save(l.path); err != nil {
+		return nil, err
+	}
+	l.sink.Record(core.Event{TS: time.Now(), Kind: core.EventGovern, Tool: "enable:" + strings.Join(names, ",")})
+	l.reload(ctx)
+	return changed, nil
+}
+
+func (l *liveSet) metaDisable(ctx context.Context, names []string) ([]string, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	f, err := config.Load(l.path)
+	if err != nil {
+		return nil, err
+	}
+	changed, err := f.Disable(names...)
+	if err != nil {
+		return nil, err
+	}
+	if err := f.Save(l.path); err != nil {
+		return nil, err
+	}
+	l.sink.Record(core.Event{TS: time.Now(), Kind: core.EventGovern, Tool: "disable:" + strings.Join(names, ",")})
+	l.reload(ctx)
+	return changed, nil
+}
+
+func (l *liveSet) metaStatus(name string) (core.ToolInfo, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, info := range l.catalog() {
+		if info.Qualified == name {
+			return info, true
+		}
+	}
+	return core.ToolInfo{}, false
 }
 
 // ConnectBackends dials every configured backend. Failures are per-backend:

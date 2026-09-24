@@ -81,6 +81,26 @@ changed/removed ones re-dialed or closed. `listen`, `token`, and
 `audit_log` still need a restart. An invalid save keeps the current
 surface (audited `reload` with the error).
 
+## The agent-facing control plane
+
+The gateway also serves five meta-tools under the reserved `toolhost__`
+namespace — always present, unaffected by reloads:
+
+| tool | what it does |
+|---|---|
+| `toolhost__search` | find tools across the whole catalog by name/description, with approved/enabled state |
+| `toolhost__list` | `enabled` (default), `approved`, or `all` |
+| `toolhost__call` | call any *enabled* tool by name — the escape hatch for clients that don't refresh on `tools/list_changed` |
+| `toolhost__enable` | move approved tools onto the live surface, right now |
+| `toolhost__disable` | pull tools off the live surface, right now |
+
+So the agent can self-serve: search the catalog → enable what it needs →
+call it → disable when done. The trust split holds: **agents govern
+`enabled`; humans govern `approved`.** Enable refuses unapproved tools —
+approval stays a human decision (`toolhost approve`). Every agent-side
+enable/disable is audited (`govern` events) and refused calls are too
+(`tool_forbidden`).
+
 ## What this is not (yet)
 
 No tenancy, no console, no database, no upstream credential brokerage

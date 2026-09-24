@@ -52,6 +52,16 @@ subprocesses; adapters own those. One dependency direction: adapters → core.
   watcher never reads a torn write; an invalid or unresolvable config
   keeps the current surface and audits the failure. `listen`, `token`,
   `audit_log` still require a restart.
+- **The gateway is a tool too.** `frontdoor` registers five meta-tools —
+  `toolhost__{search,list,call,enable,disable}` — outside the resolved
+  set, so `Reload` can never drop them. They call into `liveSet`: search
+  and list read the discovered catalog plus governance state; enable and
+  disable write through the same config file the CLI edits (approval gate
+  included) then reload synchronously; `call` dispatches through the live
+  set at call time — the escape hatch for clients that ignore
+  `tools/list_changed`. Agents govern `enabled`; humans govern
+  `approved`. Agent-initiated governance is audited as `govern` events;
+  refused calls as `tool_forbidden`.
 - **Fail closed.** A backend that won't connect contributes zero tools
   (warned, audited `backend_error`, never silently callable). A tool whose
   name can't be safely namespaced is skipped. A duplicate qualified name is
