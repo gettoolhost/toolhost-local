@@ -27,7 +27,7 @@ $EDITOR toolhost.json           # add your backends (stdio or http)
 cat toolhost-audit.jsonl        # every call, identified and timed
 ```
 
-Config:
+Config — three transports × four upstream auth modes:
 
 ```json
 {
@@ -35,14 +35,41 @@ Config:
   "token": "th_…",
   "audit_log": "toolhost-audit.jsonl",
   "backends": {
-    "fs": { "transport": "stdio", "command": "npx",
-            "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"] },
-    "remote": { "transport": "http", "url": "https://mcp.example.com/mcp",
-                "headers": { "Authorization": "Bearer …" } }
+    "fs":      { "transport": "stdio", "command": "npx",
+                 "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"] },
+    "remote":  { "transport": "http", "url": "https://mcp.example.com/mcp" },
+    "keyed":   { "transport": "http", "url": "https://mcp.example.com/mcp",
+                 "auth": { "type": "bearer", "token": "sk-…" } },
+    "machine": { "transport": "http", "url": "https://mcp.example.com/mcp",
+                 "auth": { "type": "client_credentials",
+                           "client_id": "…", "client_secret": "…" } },
+    "human":   { "transport": "http", "url": "https://mcp.example.com/mcp",
+                 "auth": { "type": "oauth" } },
+    "legacy":  { "transport": "sse", "url": "https://mcp.example.com/sse" }
   },
   "approved": ["fs__read_file"]
 }
 ```
+
+| transport | none | `bearer` | `client_credentials` | `oauth` |
+|---|---|---|---|---|
+| `stdio` | ✓ | via `env` | — | — |
+| `http` | ✓ | ✓ | ✓ | ✓ |
+| `sse` | ✓ | ✓ | ✓ | ✓ via stored grant |
+
+`stdio` backends take credentials through `env`. `bearer` is the API-key
+shape — also expressible as a raw `headers` entry. `client_credentials`
+discovers the token endpoint from the server's Protected Resource Metadata
+and mints on connect. `oauth` is auth-code + PKCE:
+
+```bash
+./toolhost auth human      # browser + loopback callback; grant is persisted
+./toolhost serve           # reuses and refreshes it — never opens a browser
+```
+
+Grants live in `toolhost.tokens.json` next to the config (0600). Without a
+grant, `serve`/`discover` fail that backend with "run `toolhost auth`" —
+no surprise browser.
 
 Point any MCP client at `http://127.0.0.1:8080/mcp` with the bearer token.
 Tools are namespaced `backend__tool`. Approving changes the config file;
@@ -50,10 +77,10 @@ Tools are namespaced `backend__tool`. Approving changes the config file;
 
 ## What this is not (yet)
 
-No OAuth, no tenancy, no console, no database, no upstream credential
-brokerage. A single key, a single endpoint, a governed call. The mature
-enterprise tree this grew from lives in `reference/` — read-only, its own
-git history intact.
+No tenancy, no console, no database, no upstream credential brokerage
+beyond the auth block above. A single key, a single endpoint, a governed
+call. The mature enterprise tree this grew from lives in `reference/` —
+read-only, its own git history intact.
 
 ## Layout
 

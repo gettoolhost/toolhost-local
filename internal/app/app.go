@@ -20,6 +20,7 @@ import (
 	"toolhost/internal/config"
 	"toolhost/internal/core"
 	"toolhost/internal/frontdoor"
+	"toolhost/internal/oauth"
 	"toolhost/internal/upstream"
 )
 
@@ -67,7 +68,11 @@ func Discover(ctx context.Context, path string, w io.Writer) error {
 	if err != nil {
 		return err
 	}
-	ups, errs := ConnectBackends(ctx, f, audit.Discard{}, slog.Default())
+	tokens, err := oauth.OpenStore(oauth.StorePath(path))
+	if err != nil {
+		return err
+	}
+	ups, errs := ConnectBackends(ctx, f, tokens, audit.Discard{}, slog.Default())
 	defer closeAll(ups)
 
 	names := make([]string, 0, len(ups))
@@ -135,6 +140,40 @@ func EditApprovals(path string, names []string, approve bool, w io.Writer) error
 	return nil
 }
 
+// Auth runs the upstream grant for one backend — the OAuth browser dance or
+// the client_credentials exchange — driven explicitly so it works the same
+// for streamable and SSE upstreams. The minted token persists to the token
+// store; serve reuses (and refreshes) it without ever prompting.
+func Auth(ctx context.Context, path, name string, w io.Writer) error {
+	f, err := config.Load(path)
+	if err != nil {
+		return err
+	}
+	b, ok := f.Backends[name]
+	if !ok {
+		return fmt.Errorf("no backend %q in %s", name, path)
+	}
+	if b.Transport == "stdio" {
+		return fmt.Errorf("backend %q is stdio — credentials belong in its env block", name)
+	}
+	if b.Auth == nil || (b.Auth.Type != "oauth" && b.Auth.Type != "client_credentials") {
+		return fmt.Errorf("backend %q has no oauth/client_credentials auth block — bearer tokens go in config directly", name)
+	}
+	store, err := oauth.OpenStore(oauth.StorePath(path))
+	if err != nil {
+		return err
+	}
+	h, err := oauth.NewHandler(ctx, name, b.Auth, store, true, nil, w)
+	if err != nil {
+		return err
+	}
+	if err := oauth.AuthorizeOnce(ctx, b.URL, h, http.DefaultClient); err != nil {
+		return err
+	}
+	fmt.Fprintf(w, "authorized %s — token stored in %s\n", name, store.Path())
+	return nil
+}
+
 // Serve connects all configured backends, resolves the approved set, and
 // serves /mcp until ctx is canceled.
 func Serve(ctx context.Context, path string, w io.Writer) error {
@@ -152,7 +191,11 @@ func Serve(ctx context.Context, path string, w io.Writer) error {
 	}
 	defer sink.Close()
 
-	ups, errs := ConnectBackends(ctx, f, sink, slog.Default())
+	tokens, err := oauth.OpenStore(oauth.StorePath(path))
+	if err != nil {
+		return err
+	}
+	ups, errs := ConnectBackends(ctx, f, tokens, sink, slog.Default())
 	defer closeAll(ups)
 	for name, e := range errs {
 		fmt.Fprintf(w, "backend %s unreachable: %s\n", name, e)
@@ -191,15 +234,16 @@ func Serve(ctx context.Context, path string, w io.Writer) error {
 // ConnectBackends dials every configured backend. Failures are per-backend:
 // the gateway keeps serving the rest, and the failure is evidenced — a dead
 // backend's tools are absent, hence uncallable, which IS the closed posture.
-func ConnectBackends(ctx context.Context, f *config.File, sink core.AuditSink, log *slog.Logger) ([]core.Upstream, map[string]error) {
+func ConnectBackends(ctx context.Context, f *config.File, tokens *oauth.Store, sink core.AuditSink, log *slog.Logger) ([]core.Upstream, map[string]error) {
 	if log == nil {
 		log = slog.Default()
 	}
 	var ups []core.Upstream
 	errs := map[string]error{}
+	opts := &upstream.Options{Tokens: tokens, Out: io.Discard}
 	for _, name := range sortedKeys(f.Backends) {
 		connectCtx, cancel := context.WithTimeout(ctx, connectTimeout)
-		up, err := upstream.Connect(connectCtx, name, f.Backends[name])
+		up, err := upstream.Connect(connectCtx, name, f.Backends[name], opts)
 		cancel()
 		if err != nil {
 			errs[name] = err

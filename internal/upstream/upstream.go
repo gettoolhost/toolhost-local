@@ -1,13 +1,18 @@
 // Package upstream is the driven adapter for backend MCP servers: it turns
-// a config.Backend into a live core.Upstream over the go-sdk client. stdio
-// spawns a subprocess (CommandTransport); http dials a streamable-HTTP
-// endpoint (StreamableClientTransport).
+// a config.Backend into a live core.Upstream over the go-sdk client.
+//
+// Transports: stdio spawns a subprocess (CommandTransport); http and sse
+// dial remote endpoints (StreamableClientTransport / SSEClientTransport).
+// Upstream auth — none, bearer, client_credentials, interactive OAuth — is
+// assembled here from the backend's auth block; on streamable the SDK
+// drives the OAuthHandler itself, on SSE we drive it once at connect.
 package upstream
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -15,14 +20,33 @@ import (
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"golang.org/x/oauth2"
 
 	"toolhost/internal/config"
 	"toolhost/internal/core"
+	"toolhost/internal/oauth"
 )
 
 // maxDiscoveryItems bounds a single backend's tool list so a malfunctioning
 // or malicious server can't stream synthetic pages indefinitely.
 const maxDiscoveryItems = 10000
+
+// Options carries the cross-cutting things a connect needs that config
+// doesn't know: where tokens persist and whether a flow may open a browser.
+type Options struct {
+	// Tokens is the persistent upstream-token store. Nil means no stored
+	// grants — an oauth backend then can only authorize interactively.
+	Tokens *oauth.Store
+	// Interactive permits the oauth fetcher to open a browser and wait on a
+	// loopback callback (`toolhost auth`); serve/discover pass false so a
+	// missing grant fails fast instead of surprising a terminal.
+	Interactive bool
+	// OpenURL launches the authorization URL — nil uses the platform opener.
+	// Tests inject a redirect-following HTTP GET.
+	OpenURL func(string) error
+	// Out is where the interactive fetcher prints the authorization URL.
+	Out io.Writer
+}
 
 // Backend is a connected upstream MCP server.
 type Backend struct {
@@ -32,8 +56,11 @@ type Backend struct {
 }
 
 // Connect dials (or spawns) the backend and discovers its tool inventory.
-func Connect(ctx context.Context, name string, cfg *config.Backend) (*Backend, error) {
-	transport, err := transportFor(cfg)
+func Connect(ctx context.Context, name string, cfg *config.Backend, opts *Options) (*Backend, error) {
+	if opts == nil {
+		opts = &Options{}
+	}
+	transport, err := transportFor(ctx, name, cfg, opts)
 	if err != nil {
 		return nil, fmt.Errorf("backend %q: %w", name, err)
 	}
@@ -76,7 +103,7 @@ func (b *Backend) Close() error {
 
 var _ core.Upstream = (*Backend)(nil)
 
-func transportFor(cfg *config.Backend) (mcp.Transport, error) {
+func transportFor(ctx context.Context, name string, cfg *config.Backend, opts *Options) (mcp.Transport, error) {
 	switch cfg.Transport {
 	case "stdio":
 		if cfg.Command == "" {
@@ -95,18 +122,97 @@ func transportFor(cfg *config.Backend) (mcp.Transport, error) {
 		return &mcp.CommandTransport{Command: cmd}, nil
 
 	case "http", "streamable_http":
-		u, err := url.Parse(cfg.URL)
-		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
-			return nil, fmt.Errorf("http transport requires an http(s) url, got %q", cfg.URL)
+		if err := validateHTTPURL(cfg.URL); err != nil {
+			return nil, err
+		}
+		handler, err := oauth.NewHandler(ctx, name, cfg.Auth, opts.Tokens, opts.Interactive, opts.OpenURL, opts.Out)
+		if err != nil {
+			return nil, err
 		}
 		return &mcp.StreamableClientTransport{
-			Endpoint:   cfg.URL,
-			HTTPClient: &http.Client{Transport: headerTransport{base: http.DefaultTransport, headers: cfg.Headers}},
+			Endpoint:     cfg.URL,
+			HTTPClient:   baseClient(cfg),
+			OAuthHandler: handler,
 		}, nil
 
+	case "sse":
+		if err := validateHTTPURL(cfg.URL); err != nil {
+			return nil, err
+		}
+		// SSEClientTransport has no OAuthHandler seam — drive the grant
+		// ourselves, once, at connect.
+		hc, err := sseClient(ctx, name, cfg, opts)
+		if err != nil {
+			return nil, err
+		}
+		return &mcp.SSEClientTransport{Endpoint: cfg.URL, HTTPClient: hc}, nil
+
 	default:
-		return nil, fmt.Errorf("transport must be %q or %q, got %q", "stdio", "http", cfg.Transport)
+		return nil, fmt.Errorf("transport must be %q, %q or %q, got %q", "stdio", "http", "sse", cfg.Transport)
 	}
+}
+
+func validateHTTPURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return fmt.Errorf("requires an http(s) url, got %q", raw)
+	}
+	return nil
+}
+
+// baseClient returns the HTTP client every remote transport shares: static
+// headers plus the auth.bearer sugar (auth wins over a literal Authorization
+// in headers — configured credentials beat loose strings).
+func baseClient(cfg *config.Backend) *http.Client {
+	headers := make(map[string]string, len(cfg.Headers)+1)
+	for k, v := range cfg.Headers {
+		headers[k] = v
+	}
+	if cfg.Auth != nil && cfg.Auth.Type == "bearer" && cfg.Auth.Token != "" {
+		headers["Authorization"] = "Bearer " + cfg.Auth.Token
+	}
+	return &http.Client{Transport: headerTransport{base: http.DefaultTransport, headers: headers}}
+}
+
+// sseClient builds the HTTP client for an SSE backend, resolving auth the
+// SDK can't: client_credentials drives its own grant against the probed 401,
+// oauth reuses the stored grant (or points at `toolhost auth`).
+func sseClient(ctx context.Context, name string, cfg *config.Backend, opts *Options) (*http.Client, error) {
+	base := headerTransport{base: http.DefaultTransport, headers: cfg.Headers}
+	plain := &http.Client{Transport: base}
+
+	if cfg.Auth == nil {
+		return plain, nil
+	}
+	switch cfg.Auth.Type {
+	case "", "none", "bearer":
+		return baseClient(cfg), nil
+
+	case "client_credentials":
+		h, err := oauth.NewHandler(ctx, name, cfg.Auth, opts.Tokens, false, opts.OpenURL, opts.Out)
+		if err != nil {
+			return nil, err
+		}
+		if err := oauth.AuthorizeOnce(ctx, cfg.URL, h, plain); err != nil {
+			return nil, err
+		}
+		ts, err := h.TokenSource(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return &http.Client{Transport: &oauth2.Transport{Source: ts, Base: base}}, nil
+
+	case "oauth":
+		if opts.Tokens == nil {
+			return nil, fmt.Errorf("backend %q needs an OAuth grant — run: toolhost auth %s", name, name)
+		}
+		ts := opts.Tokens.Source(ctx, name)
+		if ts == nil {
+			return nil, fmt.Errorf("backend %q needs an OAuth grant — run: toolhost auth %s", name, name)
+		}
+		return &http.Client{Transport: &oauth2.Transport{Source: ts, Base: base}}, nil
+	}
+	return plain, nil
 }
 
 // headerTransport injects per-backend static headers (e.g. an upstream API

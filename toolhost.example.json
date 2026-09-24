@@ -6,12 +6,31 @@
     "fs": {
       "transport": "stdio",
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+      "env": { "EXAMPLE_API_KEY": "env is how stdio backends get credentials" }
     },
     "remote": {
       "transport": "http",
+      "url": "https://mcp.example.com/mcp"
+    },
+    "keyed": {
+      "transport": "http",
       "url": "https://mcp.example.com/mcp",
-      "headers": { "Authorization": "Bearer ..." }
+      "auth": { "type": "bearer", "token": "sk-upstream-key" }
+    },
+    "machine": {
+      "transport": "http",
+      "url": "https://mcp.example.com/mcp",
+      "auth": { "type": "client_credentials", "client_id": "id", "client_secret": "secret", "scopes": ["tools"] }
+    },
+    "human": {
+      "transport": "http",
+      "url": "https://mcp.example.com/mcp",
+      "auth": { "type": "oauth" }
+    },
+    "legacy": {
+      "transport": "sse",
+      "url": "https://mcp.example.com/sse"
     }
   },
   "approved": [

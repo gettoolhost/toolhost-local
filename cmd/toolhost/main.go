@@ -42,6 +42,16 @@ func main() {
 		_ = fs.Parse(os.Args[2:])
 		err = app.Discover(context.Background(), *cfg, os.Stdout)
 
+	case "auth":
+		fs := flag.NewFlagSet("auth", flag.ExitOnError)
+		cfg := fs.String("c", "toolhost.json", "config path")
+		_ = fs.Parse(os.Args[2:])
+		if fs.NArg() != 1 {
+			fmt.Fprintln(os.Stderr, "usage: toolhost auth [-c config] <backend>")
+			os.Exit(2)
+		}
+		err = app.Auth(context.Background(), *cfg, fs.Arg(0), os.Stdout)
+
 	case "approve", "revoke":
 		fs := flag.NewFlagSet(os.Args[1], flag.ExitOnError)
 		cfg := fs.String("c", "toolhost.json", "config path")
@@ -81,6 +91,7 @@ func usage() {
   toolhost discover   list every tool your backends expose (backend__tool)
   toolhost approve    approve qualified tool names, e.g. fs__read_file
   toolhost revoke     revoke qualified tool names
+  toolhost auth       grant upstream OAuth for a backend (browser flow)
   toolhost serve      serve /mcp — Authorization: Bearer <token>
   toolhost version
 

@@ -80,7 +80,7 @@ func TestGovernedCallEndToEnd(t *testing.T) {
 	}
 	defer sink.Close()
 
-	ups, errs := app.ConnectBackends(ctx, cfg, sink, nil)
+	ups, errs := app.ConnectBackends(ctx, cfg, nil, sink, nil)
 	if len(errs) > 0 {
 		t.Fatalf("backend connect failed: %v", errs)
 	}
