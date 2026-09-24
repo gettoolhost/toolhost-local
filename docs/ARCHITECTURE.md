@@ -26,7 +26,7 @@ subprocesses; adapters own those. One dependency direction: adapters → core.
 | `internal/namespace` | `backend__tool` grammar. Pure functions. |
 | `internal/config` | Driven adapter: JSON config load/save, approve/revoke. |
 | `internal/upstream` | Driven adapter: `core.Upstream` over go-sdk client sessions (stdio via `CommandTransport`, http via `StreamableClientTransport`, sse via `SSEClientTransport`); assembles each backend's upstream auth. |
-| `internal/oauth` | Driven adapter: upstream OAuth — SDK `OAuthHandler` construction (client-credentials, auth-code+PKCE), loopback callback fetcher, `toolhost.tokens.json` grant store. |
+| `internal/oauth` | Driven adapter: upstream OAuth — SDK `OAuthHandler` construction (client-credentials, auth-code+PKCE), loopback callback fetcher, `toolhost_tokens.json` grant store. |
 | `internal/audit` | Driven adapter: `core.AuditSink` appending JSONL. |
 | `internal/frontdoor` | Driving adapter: `/mcp` HTTP server — bearer auth, go-sdk `mcp.Server`, registers exactly what `core.Resolve` returns. |
 | `internal/app` | Use cases: `Init`, `Discover`, `Approve`, `Auth`, `Serve` orchestration. |
@@ -54,7 +54,7 @@ subprocesses; adapters own those. One dependency direction: adapters → core.
 - **Two auth directions, kept apart.** Downstream: one bearer token,
   constant-time compared — deliberately boring. Upstream: per-backend
   `auth` block (none/bearer/client_credentials/oauth); grants persist to
-  `toolhost.tokens.json` beside the config, never inside it.
+  `toolhost_tokens.json` beside the config, never inside it.
 
 ## Deliberately absent
 

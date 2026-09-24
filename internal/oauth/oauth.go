@@ -32,7 +32,7 @@ const DefaultRedirectURL = "http://127.0.0.1:8484/callback"
 // StorePath is where upstream tokens live: beside the config file, never in
 // it — the config is shareable, the tokens are credentials.
 func StorePath(configPath string) string {
-	return filepath.Join(filepath.Dir(configPath), "toolhost.tokens.json")
+	return filepath.Join(filepath.Dir(configPath), "toolhost_tokens.json")
 }
 
 // StoredToken is one backend's persisted grant, including enough of the
@@ -53,7 +53,7 @@ type storeFile struct {
 	Backends map[string]*StoredToken `json:"backends"`
 }
 
-// Store persists upstream tokens in <config dir>/toolhost.tokens.json (0600).
+// Store persists upstream tokens in <config dir>/toolhost_tokens.json (0600).
 type Store struct {
 	path     string
 	mu       sync.Mutex

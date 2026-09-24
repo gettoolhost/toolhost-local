@@ -5,7 +5,7 @@
 # Local runtime state: config carries a bearer token, audit log carries
 # calls, the token store carries upstream OAuth grants — all credentials.
 /toolhost.json
-/toolhost.tokens.json
+/toolhost_tokens.json
 /*_audit.jsonl
 /audit.jsonl
 

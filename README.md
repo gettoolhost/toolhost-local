@@ -67,7 +67,7 @@ and mints on connect. `oauth` is auth-code + PKCE:
 ./toolhost serve           # reuses and refreshes it — never opens a browser
 ```
 
-Grants live in `toolhost.tokens.json` next to the config (0600). Without a
+Grants live in `toolhost_tokens.json` next to the config (0600). Without a
 grant, `serve`/`discover` fail that backend with "run `toolhost auth`" —
 no surprise browser.
 

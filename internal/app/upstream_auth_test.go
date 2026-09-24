@@ -234,7 +234,7 @@ func TestOAuthUpstream(t *testing.T) {
 	redirect := "http://" + ln.Addr().String() + "/callback"
 	ln.Close()
 
-	storePath := filepath.Join(t.TempDir(), "toolhost.tokens.json")
+	storePath := filepath.Join(t.TempDir(), "toolhost_tokens.json")
 	store, err := oauth.OpenStore(storePath)
 	if err != nil {
 		t.Fatal(err)
@@ -357,7 +357,7 @@ func TestSSEWithStoredGrant(t *testing.T) {
 
 func mustStore(t *testing.T) *oauth.Store {
 	t.Helper()
-	s, err := oauth.OpenStore(filepath.Join(t.TempDir(), "toolhost.tokens.json"))
+	s, err := oauth.OpenStore(filepath.Join(t.TempDir(), "toolhost_tokens.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
