@@ -23,7 +23,6 @@ import (
 	"toolhost/internal/config"
 	"toolhost/internal/core"
 	"toolhost/internal/frontdoor"
-	"toolhost/internal/namespace"
 	"toolhost/internal/oauth"
 	"toolhost/internal/upstream"
 )
@@ -93,7 +92,10 @@ func Discover(ctx context.Context, path string, w io.Writer) error {
 
 	for _, up := range ups {
 		for _, t := range up.Tools() {
-			qualified := up.Namespace() + "__" + t.Name
+			qualified, err := core.Qualify(up, t.Name)
+			if err != nil {
+				continue
+			}
 			status := " "
 			if f.IsEnabled(qualified) {
 				status = "✓"
@@ -480,7 +482,7 @@ func (l *liveSet) catalog() []core.ToolInfo {
 	var out []core.ToolInfo
 	for _, ns := range sortedKeys(l.ups) {
 		for _, t := range l.ups[ns].Tools() {
-			q, err := namespace.Join(ns, t.Name)
+			q, err := core.Qualify(l.ups[ns], t.Name)
 			if err != nil {
 				continue
 			}

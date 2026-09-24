@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -34,6 +35,30 @@ type Resolution struct {
 	Skipped []SkippedTool
 }
 
+// Passthrough marks an upstream whose tool names are already qualified —
+// a federated toolhost gateway. Resolve trusts the names instead of
+// re-namespacing.
+type Passthrough interface {
+	Passthrough() bool
+}
+
+// Qualify is the one name-mapping rule shared by Resolve and the meta
+// catalog: passthrough upstreams keep their (already qualified) names —
+// except the inner gateway's own toolhost__* control plane, which is
+// dropped; everything else is namespaced backend__tool.
+func Qualify(up Upstream, name string) (string, error) {
+	if p, ok := up.(Passthrough); ok && p.Passthrough() {
+		if strings.HasPrefix(name, "toolhost"+namespace.Separator) {
+			return "", fmt.Errorf("toolhost__* is the inner gateway's control plane — not forwarded")
+		}
+		if _, _, err := namespace.Split(name); err != nil {
+			return "", fmt.Errorf("passthrough upstream tool %q is not a qualified name: %w", name, err)
+		}
+		return name, nil
+	}
+	return namespace.Join(up.Namespace(), name)
+}
+
 // Resolve answers "what can be seen and called" — the ONLY place that
 // question is answered. A tool is exposed iff it is discovered AND approved
 // AND enabled: discovered ≠ approved ≠ enabled. A nil enabled set means
@@ -47,7 +72,7 @@ func Resolve(upstreams []Upstream, approved, enabled map[string]bool) (*Resoluti
 	seen := map[string]string{}
 	for _, up := range upstreams {
 		for _, tool := range up.Tools() {
-			qualified, err := namespace.Join(up.Namespace(), tool.Name)
+			qualified, err := Qualify(up, tool.Name)
 			if err != nil {
 				res.Skipped = append(res.Skipped, SkippedTool{
 					Backend: up.Namespace(), Tool: tool.Name, Reason: err.Error(),

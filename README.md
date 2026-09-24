@@ -71,6 +71,12 @@ Grants live in `toolhost_tokens.json` next to the config (0600). Without a
 grant, `serve`/`discover` fail that backend with "run `toolhost auth`" —
 no surprise browser.
 
+**Federation**: a gateway is itself a Streamable HTTP MCP server — attach
+it to another gateway with `"passthrough": true` on that backend. Its
+already-qualified tool names pass through unchanged
+(`cbm__search_graph` stays `cbm__search_graph` at any depth), and its
+`toolhost__*` control plane is dropped at the edge.
+
 Point any MCP client at `http://127.0.0.1:8080/mcp` with the bearer token.
 Tools are namespaced `backend__tool`.
 

@@ -27,6 +27,12 @@ type Backend struct {
 	URL     string            `json:"url,omitempty"`
 	Headers map[string]string `json:"headers,omitempty"`
 	Auth    *Auth             `json:"auth,omitempty"`
+
+	// Passthrough marks this upstream as a federated toolhost gateway: its
+	// tool names arrive already qualified ("cbm__search_graph") and are
+	// trusted as-is instead of being re-namespaced. Its own toolhost__*
+	// meta-tools are dropped — the outer gateway has its own control plane.
+	Passthrough bool `json:"passthrough,omitempty"`
 }
 
 // Auth configures how toolhost authenticates TO an upstream server —

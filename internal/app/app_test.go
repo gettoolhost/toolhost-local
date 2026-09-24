@@ -369,6 +369,36 @@ func TestMetaToolsEndToEnd(t *testing.T) {
 	}
 }
 
+// Passthrough (federation): an upstream whose names arrive already
+// qualified keeps them — no re-namespacing; the inner gateway's
+// toolhost__* control plane is dropped; unqualified names are skipped.
+func TestResolvePassthrough(t *testing.T) {
+	ups := []core.Upstream{
+		&stubPassthroughUpstream{stubUpstream{ns: "edge", tools: []*mcp.Tool{
+			{Name: "cbm__search_graph"}, // already qualified — passes through
+			{Name: "toolhost__search"},  // inner control plane — dropped
+			{Name: "bare_name"},         // not qualified — skipped
+		}}},
+	}
+	res, err := core.Resolve(ups, map[string]bool{"cbm__search_graph": true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Tools) != 1 || res.Tools[0].Qualified != "cbm__search_graph" {
+		t.Fatalf("want exactly cbm__search_graph, got %+v", res.Tools)
+	}
+	if res.Tools[0].Origin != "cbm__search_graph" {
+		t.Fatalf("origin must be the qualified name for dispatch, got %q", res.Tools[0].Origin)
+	}
+	if len(res.Skipped) != 2 {
+		t.Fatalf("want toolhost__search + bare_name skipped, got %+v", res.Skipped)
+	}
+}
+
+type stubPassthroughUpstream struct{ stubUpstream }
+
+func (s *stubPassthroughUpstream) Passthrough() bool { return true }
+
 type stubUpstream struct {
 	ns    string
 	tools []*mcp.Tool

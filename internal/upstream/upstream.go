@@ -50,10 +50,15 @@ type Options struct {
 
 // Backend is a connected upstream MCP server.
 type Backend struct {
-	namespace string
-	session   *mcp.ClientSession
-	tools     []*mcp.Tool
+	namespace   string
+	session     *mcp.ClientSession
+	tools       []*mcp.Tool
+	passthrough bool
 }
+
+// Passthrough reports whether this upstream is a federated gateway — its
+// tool names are already qualified. Part of core.Passthrough.
+func (b *Backend) Passthrough() bool { return b.passthrough }
 
 // Connect dials (or spawns) the backend and discovers its tool inventory.
 func Connect(ctx context.Context, name string, cfg *config.Backend, opts *Options) (*Backend, error) {
@@ -81,7 +86,7 @@ func Connect(ctx context.Context, name string, cfg *config.Backend, opts *Option
 		return nil, fmt.Errorf("backend %q: list tools: %w", name, err)
 	}
 
-	return &Backend{namespace: name, session: session, tools: tools}, nil
+	return &Backend{namespace: name, session: session, tools: tools, passthrough: cfg.Passthrough}, nil
 }
 
 func (b *Backend) Namespace() string  { return b.namespace }

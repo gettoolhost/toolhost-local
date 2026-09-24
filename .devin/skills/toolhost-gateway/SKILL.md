@@ -1,12 +1,17 @@
 ---
 name: toolhost-gateway
-description: How to use and operate toolhost, the local governed MCP gateway — one endpoint that fronts many MCP servers behind a three-tier tool gate (discovered/approved/enabled) with an agent-facing control plane. Use this whenever you see toolhost__* tools in your MCP surface, when a needed MCP tool isn't available and a toolhost gateway may be running, when the user mentions toolhost or an "MCP gateway", or when setting up governed MCP access in a project. Agents self-serve the live surface via toolhost__search/enable/call — do NOT ask the human to add MCP servers directly if toolhost is present.
+description: How to use and operate toolhost — the local governed MCP gateway, one bearer-gated /mcp endpoint that fronts many MCP servers behind a three-tier tool gate (discovered/approved/enabled) with an agent-facing control plane. Use this whenever you see toolhost__* tools in your MCP surface, when a needed MCP tool isn't available and a toolhost-local gateway may be running, when the user mentions toolhost-local or an "MCP local gateway", or when setting up governed MCP access in a project. Agents self-serve the live surface via toolhost__search/enable/call — do NOT ask the human to add MCP servers directly if toolhost is present.
 ---
 
-# toolhost — the governed MCP gateway
+# toolhost-local — the governed MCP gateway
 
-One local HTTP endpoint (`/mcp`, bearer-token auth) that fronts N upstream
-MCP servers. Agent-facing tools are namespaced `backend__tool`. The gate:
+toolhost is a gateway brand: this is the **local edition** — a single
+binary that fronts N upstream MCP servers behind one bearer-gated
+`/mcp` endpoint. It IS a standard Streamable HTTP MCP server, so it
+composes: attach a local gateway to another gateway (or any MCP client)
+as one upstream — federation is a config entry, not a feature.
+
+Agent-facing tools are namespaced `backend__tool`. The gate:
 
 ```
 discovered → approved (HUMAN policy) → enabled (live surface)
@@ -42,13 +47,33 @@ it. Every enable/disable/call is written to `toolhost_audit.jsonl`.
 It's a local process, not a service:
 
 ```bash
-# find it: look for toolhost.json in the project root (has "listen" + backends)
+# find it: toolhost.json sits beside the binary (has "listen" + backends)
 ./toolhost serve                      # from that dir, or:
 tmux new-session -d -s toolhost './toolhost serve'
 ```
 
-Config file is `toolhost.json` beside the binary; token inside it.
-`serve` hot-reloads the file (~2s) — CLI edits apply live.
+`serve` hot-reloads the config file (~2s) — CLI edits apply live.
+
+## Composing gateways (federation)
+
+A local gateway is an attachable upstream. In another gateway's
+`toolhost.json`:
+
+```json
+"edge": {
+  "transport": "http",
+  "url": "http://127.0.0.1:8188/mcp",
+  "auth": { "type": "bearer", "token": "th_<the local gateway's token>" },
+  "passthrough": true
+}
+```
+
+`passthrough: true` says "this upstream is a toolhost gateway — its names
+arrive already qualified (`cbm__search_graph`), trust them as-is instead
+of re-namespacing." Qualified names are stable through any depth of
+gateways. The inner gateway's own `toolhost__*` control plane is dropped
+at the edge (logged as skipped) — each gateway keeps its own. This is the
+path to the enterprise tier: same protocol, bigger door.
 
 ## Setting up toolhost in a new project
 

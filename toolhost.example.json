@@ -31,6 +31,12 @@
     "legacy": {
       "transport": "sse",
       "url": "https://mcp.example.com/sse"
+    },
+    "edge": {
+      "transport": "http",
+      "url": "http://127.0.0.1:8188/mcp",
+      "auth": { "type": "bearer", "token": "th_inner-gateway-token" },
+      "passthrough": true
     }
   },
   "approved": [
