@@ -43,9 +43,15 @@ subprocesses; adapters own those. One dependency direction: adapters → core.
   uncallable *structurally*, not by a check that could be skipped.
 - **`__` separator.** See `internal/namespace` — chosen because MCP clients
   enforce `^[a-zA-Z0-9_-]{1,64}$` on tool names; `::` and `.`/`/` fail it.
-- **Approval is a file.** `approved` is a list of qualified names in
-  `toolhost.json`. `toolhost approve` edits it; `serve` reads it at boot.
-  No live mutation yet — restart to apply.
+- **Approval is a file.** `approved`/`enabled` are lists of qualified
+  names in `toolhost.json`. `serve` polls the file (~1.5s) and hot-swaps
+  the surface: `frontdoor.Reload` diffs the live set — unchanged backend
+  sessions are kept, changed/removed ones re-dialed or closed — then
+  `AddTool`/`RemoveTools` mutate the MCP server, which emits
+  `tools/list_changed`. Config saves are atomic (tmp+rename) so the
+  watcher never reads a torn write; an invalid or unresolvable config
+  keeps the current surface and audits the failure. `listen`, `token`,
+  `audit_log` still require a restart.
 - **Fail closed.** A backend that won't connect contributes zero tools
   (warned, audited `backend_error`, never silently callable). A tool whose
   name can't be safely namespaced is skipped. A duplicate qualified name is
@@ -60,6 +66,6 @@ subprocesses; adapters own those. One dependency direction: adapters → core.
 
 An OAuth authorization server of our own, per-principal upstream
 credentials, tenancy, policy beyond the approve-list, rate limiting, schema
-pinning, generations/hot-reload, console, portal, Postgres. The
+pinning, config generations, console, portal, Postgres. The
 `reference/` tree has production-grade versions of all of it — port when a
 real need appears, not before.

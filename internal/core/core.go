@@ -33,7 +33,7 @@ type Upstream interface {
 // Event is one governed action's evidence — the driven audit port.
 type Event struct {
 	TS      time.Time `json:"ts"`
-	Kind    string    `json:"kind"` // tool_call | auth_failed | backend_error
+	Kind    string    `json:"kind"` // tool_call | auth_failed | backend_error | reload
 	Backend string    `json:"backend,omitempty"`
 	Tool    string    `json:"tool,omitempty"`
 	MS      int64     `json:"ms,omitempty"`
@@ -53,4 +53,5 @@ const (
 	EventAuthFailed    = "auth_failed"
 	EventBackendError  = "backend_error"
 	EventToolForbidden = "tool_forbidden"
+	EventReload        = "reload"
 )

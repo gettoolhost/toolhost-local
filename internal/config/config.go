@@ -170,13 +170,18 @@ func (b *Backend) validateAuth(name string) error {
 	return nil
 }
 
-// Save writes the config back atomically (0600 — it carries the token).
+// Save writes the config back atomically (0600 — it carries the token) —
+// tmp+rename so the serve watcher never reads a torn file.
 func (f *File) Save(path string) error {
 	raw, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(raw, '\n'), 0o600)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, append(raw, '\n'), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // ApprovedSet is the lookup form Resolve consumes.

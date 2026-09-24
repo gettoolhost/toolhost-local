@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"reflect"
 	"sort"
 	"time"
 
@@ -139,7 +140,7 @@ func EditApprovals(path string, names []string, approve bool, w io.Writer) error
 	for _, n := range changed {
 		fmt.Fprintf(w, "%s %s\n", verb, n)
 	}
-	fmt.Fprintln(w, "takes effect on next serve")
+	fmt.Fprintln(w, "live within ~2s if toolhost serve is running")
 	return nil
 }
 
@@ -199,7 +200,7 @@ func EditEnabled(path string, names []string, enable, only bool, w io.Writer) er
 	if len(changed) == 0 {
 		fmt.Fprintln(w, verb)
 	}
-	fmt.Fprintln(w, "takes effect on next serve")
+	fmt.Fprintln(w, "live within ~2s if toolhost serve is running")
 	return nil
 }
 
@@ -304,6 +305,20 @@ func Serve(ctx context.Context, path string, w io.Writer) error {
 		return err
 	}
 
+	live := &liveSet{
+		ups:   map[string]core.Upstream{},
+		cfgs:  map[string]*config.Backend{},
+		opts:  &upstream.Options{Tokens: tokens, Out: io.Discard},
+		token: f.Token, listen: f.Listen, auditLog: f.AuditLog,
+	}
+	for _, up := range ups {
+		live.ups[up.Namespace()] = up
+	}
+	for name, cfg := range f.Backends {
+		live.cfgs[name] = cfg
+	}
+	go live.watch(ctx, path, srv, sink, w)
+
 	httpSrv := &http.Server{Addr: f.Listen, Handler: srv.Handler()}
 	go func() {
 		<-ctx.Done()
@@ -312,12 +327,114 @@ func Serve(ctx context.Context, path string, w io.Writer) error {
 		_ = httpSrv.Shutdown(shutdownCtx)
 	}()
 
-	fmt.Fprintf(w, "toolhost %s serving %d approved tools on http://%s/mcp (audit: %s)\n",
+	fmt.Fprintf(w, "toolhost %s serving %d approved tools on http://%s/mcp (audit: %s, watching config)\n",
 		core.Version, len(res.Tools), f.Listen, f.AuditLog)
 	if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil
+}
+
+// liveSet is the currently-served backend pool: sessions keyed by namespace
+// plus the config that produced each, so a reload keeps unchanged sessions
+// and re-dials only what changed. Owned by the watch goroutine after Serve
+// builds it — no mutex needed.
+type liveSet struct {
+	ups  map[string]core.Upstream
+	cfgs map[string]*config.Backend
+	opts *upstream.Options
+
+	// Restart-required fields from the boot config — hot-changing the
+	// listen address, the bearer token, or the audit path is refused.
+	token, listen, auditLog string
+}
+
+// watch polls the config file and hot-applies changes: unchanged backend
+// sessions are kept, added/changed/removed backends are re-dialed or
+// closed, and the tool surface is swapped in place — connected clients get
+// tools/list_changed. An unreadable or invalid config keeps the current
+// surface; the failure is logged and audited. Saving config via any
+// toolhost command is atomic, so a torn file is only ever a hand-edit mid-
+// write — the next tick retries.
+func (l *liveSet) watch(ctx context.Context, path string, fd *frontdoor.Server, sink core.AuditSink, w io.Writer) {
+	var mod time.Time
+	var size int64
+	if fi, err := os.Stat(path); err == nil {
+		mod, size = fi.ModTime(), fi.Size()
+	}
+	tick := time.NewTicker(1500 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+		fi, err := os.Stat(path)
+		if err != nil || (fi.ModTime() == mod && fi.Size() == size) {
+			continue
+		}
+		mod, size = fi.ModTime(), fi.Size()
+		l.reload(ctx, path, fd, sink, w)
+	}
+}
+
+func (l *liveSet) reload(ctx context.Context, path string, fd *frontdoor.Server, sink core.AuditSink, w io.Writer) {
+	log := slog.Default()
+	f, err := config.Load(path)
+	if err != nil {
+		log.Warn("reload: invalid config — keeping current surface", "err", err)
+		sink.Record(core.Event{TS: time.Now(), Kind: core.EventReload, Err: err.Error()})
+		return
+	}
+	if f.Token != l.token || f.Listen != l.listen || f.AuditLog != l.auditLog {
+		fmt.Fprintln(w, "reload: listen/token/audit_log changes take effect on restart — keeping current values")
+	}
+
+	var ups []core.Upstream
+	for _, name := range sortedKeys(f.Backends) {
+		cfg := f.Backends[name]
+		if up, ok := l.ups[name]; ok && reflect.DeepEqual(l.cfgs[name], cfg) {
+			ups = append(ups, up)
+			continue
+		}
+		if old, ok := l.ups[name]; ok {
+			_ = old.Close()
+			delete(l.ups, name)
+		}
+		connectCtx, cancel := context.WithTimeout(ctx, connectTimeout)
+		up, err := upstream.Connect(connectCtx, name, cfg, l.opts)
+		cancel()
+		if err != nil {
+			log.Warn("reload: backend unavailable", "backend", name, "err", err)
+			sink.Record(core.Event{TS: time.Now(), Kind: core.EventBackendError, Backend: name, Err: "reload: " + err.Error()})
+		} else {
+			l.ups[name] = up
+			ups = append(ups, up)
+		}
+		l.cfgs[name] = cfg
+	}
+	for name, up := range l.ups {
+		if _, ok := f.Backends[name]; !ok {
+			_ = up.Close()
+			delete(l.ups, name)
+			delete(l.cfgs, name)
+		}
+	}
+
+	enabledSet, _ := f.EnabledSet()
+	res, err := core.Resolve(ups, f.ApprovedSet(), enabledSet)
+	if err != nil {
+		log.Warn("reload: resolve failed — keeping current surface", "err", err)
+		sink.Record(core.Event{TS: time.Now(), Kind: core.EventReload, Err: err.Error()})
+		return
+	}
+	for _, s := range res.Skipped {
+		sink.Record(core.Event{TS: time.Now(), Kind: core.EventBackendError, Backend: s.Backend, Tool: s.Tool, Err: "skipped: " + s.Reason})
+	}
+	fd.Reload(res)
+	sink.Record(core.Event{TS: time.Now(), Kind: core.EventReload})
+	fmt.Fprintf(w, "reloaded: %d tools serving\n", len(res.Tools))
 }
 
 // ConnectBackends dials every configured backend. Failures are per-backend:

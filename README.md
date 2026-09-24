@@ -72,8 +72,14 @@ grant, `serve`/`discover` fail that backend with "run `toolhost auth`" —
 no surprise browser.
 
 Point any MCP client at `http://127.0.0.1:8080/mcp` with the bearer token.
-Tools are namespaced `backend__tool`. Approving changes the config file;
-`serve` picks it up on restart.
+Tools are namespaced `backend__tool`.
+
+`serve` watches the config file (~1.5s poll): edit `approved`, `enabled`,
+or `backends` — via CLI or by hand — and the live surface swaps in place.
+Clients get `tools/list_changed`; unchanged backend sessions are kept,
+changed/removed ones re-dialed or closed. `listen`, `token`, and
+`audit_log` still need a restart. An invalid save keeps the current
+surface (audited `reload` with the error).
 
 ## What this is not (yet)
 

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -20,6 +21,10 @@ import (
 type Server struct {
 	handler http.Handler
 	mcp     *mcp.Server
+	sink    core.AuditSink
+
+	mu   sync.Mutex // guards live — Reload runs on the watcher goroutine
+	live map[string]core.ResolvedTool
 }
 
 // New builds the front door over a Resolution. Each resolved tool becomes a
@@ -40,24 +45,9 @@ func New(res *core.Resolution, token string, sink core.AuditSink) (*Server, erro
 		Tools: &mcp.ToolCapabilities{ListChanged: true},
 	}})
 
+	s := &Server{mcp: srv, sink: sink, live: map[string]core.ResolvedTool{}}
 	for _, rt := range res.Tools {
-		rt := rt
-		srv.AddTool(rt.Tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			start := time.Now()
-			result, err := rt.Upstream.Call(ctx, rt.Origin, req.Params.Arguments)
-			ev := core.Event{
-				TS:      start,
-				Kind:    core.EventToolCall,
-				Backend: rt.Upstream.Namespace(),
-				Tool:    rt.Qualified,
-				MS:      time.Since(start).Milliseconds(),
-			}
-			if err != nil {
-				ev.Err = err.Error()
-			}
-			sink.Record(ev)
-			return result, err
-		})
+		s.addTool(rt)
 	}
 
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
@@ -70,11 +60,65 @@ func New(res *core.Resolution, token string, sink core.AuditSink) (*Server, erro
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
 	})
+	s.handler = mux
 
-	return &Server{handler: mux, mcp: srv}, nil
+	return s, nil
 }
 
 func (s *Server) Handler() http.Handler { return s.handler }
+
+// addTool registers one resolved tool; the handler closes over its upstream
+// so dispatch is wiring, not a lookup. live is updated under s.mu.
+func (s *Server) addTool(rt core.ResolvedTool) {
+	s.mcp.AddTool(rt.Tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		start := time.Now()
+		result, err := rt.Upstream.Call(ctx, rt.Origin, req.Params.Arguments)
+		ev := core.Event{
+			TS:      start,
+			Kind:    core.EventToolCall,
+			Backend: rt.Upstream.Namespace(),
+			Tool:    rt.Qualified,
+			MS:      time.Since(start).Milliseconds(),
+		}
+		if err != nil {
+			ev.Err = err.Error()
+		}
+		s.sink.Record(ev)
+		return result, err
+	})
+	s.live[rt.Qualified] = rt
+}
+
+// Reload swaps the served tool set in place: tools removed or re-pointed at
+// a reconnected upstream are unregistered, new ones added. The SDK emits
+// notifications/tools/list_changed, so connected agents see the new surface
+// without reconnecting.
+func (s *Server) Reload(res *core.Resolution) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	want := make(map[string]core.ResolvedTool, len(res.Tools))
+	for _, rt := range res.Tools {
+		want[rt.Qualified] = rt
+	}
+	var drop []string
+	for name, cur := range s.live {
+		if n, ok := want[name]; !ok || n.Upstream != cur.Upstream {
+			drop = append(drop, name)
+		}
+	}
+	if len(drop) > 0 {
+		s.mcp.RemoveTools(drop...)
+		for _, name := range drop {
+			delete(s.live, name)
+		}
+	}
+	for name, rt := range want {
+		if _, ok := s.live[name]; !ok {
+			s.addTool(rt)
+		}
+	}
+}
 
 // bearer is the whole auth stack: one token, constant-time compared. Denials
 // are evidence too — an auth_failed record carries the remote address.
