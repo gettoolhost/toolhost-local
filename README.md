@@ -170,5 +170,11 @@ call.
 
 ## Layout
 
-`docs/ARCHITECTURE.md` is the one-page map: ports & adapters, the resolver
-that owns visibility, and what lands where.
+- `docs/CONFIGURATION.md` — every `toolhost.json` field
+- `docs/CLI.md` — every command
+- `docs/GOVERNANCE.md` — the three tiers, meta-tools, requests, audit
+- `docs/TRANSPORTS.md` — stateless/stateful/stdio, upstreams, federation
+- `docs/AUTHENTICATION.md` — bearer, upstream auth modes, `env:` refs
+- `docs/OPERATIONS.md` — service install, status, reloads, troubleshooting
+- `docs/ARCHITECTURE.md` — the one-page map: ports & adapters, the resolver
+  that owns visibility, and what lands where
