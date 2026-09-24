@@ -26,6 +26,7 @@ import (
 	"toolhost/internal/config"
 	"toolhost/internal/core"
 	"toolhost/internal/frontdoor"
+	"toolhost/internal/upstream"
 )
 
 type authTransport struct{ token string }
@@ -56,6 +57,18 @@ func fixtureUpstream(t *testing.T) *httptest.Server {
 		InputSchema: map[string]any{"type": "object"},
 	}, func(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "leaked"}}}, nil
+	})
+	srv.AddTool(&mcp.Tool{
+		Name:        "slow",
+		Description: "sleeps 3s — past any test call timeout",
+		InputSchema: map[string]any{"type": "object"},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(3 * time.Second):
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "late"}}}, nil
+		}
 	})
 	httpSrv := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, nil))
 	t.Cleanup(httpSrv.Close)
@@ -262,7 +275,7 @@ func TestMetaToolsEndToEnd(t *testing.T) {
 	}
 
 	serveDone := make(chan error, 1)
-	go func() { serveDone <- app.Serve(ctx, cfgPath, io.Discard) }()
+	go func() { serveDone <- app.Serve(ctx, cfgPath, io.Discard, false) }()
 	defer func() {
 		cancel()
 		if err := <-serveDone; err != nil {
@@ -300,7 +313,8 @@ func TestMetaToolsEndToEnd(t *testing.T) {
 	for _, tl := range listed.Tools {
 		names[tl.Name] = true
 	}
-	for _, want := range []string{"up__echo", "toolhost__search", "toolhost__list", "toolhost__call", "toolhost__enable", "toolhost__disable"} {
+	for _, want := range []string{"up__echo", "toolhost__search", "toolhost__list", "toolhost__call",
+		"toolhost__enable", "toolhost__disable", "toolhost__request", "toolhost__status"} {
 		if !names[want] {
 			t.Fatalf("surface missing %q — got %v", want, names)
 		}
@@ -403,7 +417,7 @@ func TestStatelessEndToEnd(t *testing.T) {
 	}
 
 	serveDone := make(chan error, 1)
-	go func() { serveDone <- app.Serve(ctx, cfgPath, io.Discard) }()
+	go func() { serveDone <- app.Serve(ctx, cfgPath, io.Discard, false) }()
 	defer func() {
 		cancel()
 		if err := <-serveDone; err != nil {
@@ -505,4 +519,273 @@ func (s *stubUpstream) Tools() []*mcp.Tool { return s.tools }
 func (s *stubUpstream) Close() error       { return nil }
 func (s *stubUpstream) Call(context.Context, string, json.RawMessage) (*mcp.CallToolResult, error) {
 	return nil, fmt.Errorf("stub")
+}
+
+// call_timeout: the fixture's slow tool sleeps 3s — returning inside 2s
+// proves a bound fired. Three layers: the shared default, a per-backend
+// override, and the caller's own deadline (which must still win).
+func TestCallTimeout(t *testing.T) {
+	up := fixtureUpstream(t)
+
+	connect := func(t *testing.T, backendTimeout string, defaultTimeout time.Duration) *upstream.Backend {
+		t.Helper()
+		cfg := &config.Backend{Transport: "http", URL: up.URL, CallTimeout: backendTimeout}
+		b, err := upstream.Connect(context.Background(), "up", cfg,
+			&upstream.Options{DefaultCallTimeout: defaultTimeout})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = b.Close() })
+		return b
+	}
+	call := func(ctx context.Context, b *upstream.Backend) time.Duration {
+		t.Helper()
+		start := time.Now()
+		if _, err := b.Call(ctx, "slow", nil); err == nil {
+			t.Fatal("call to 30s-sleeping tool succeeded")
+		}
+		return time.Since(start)
+	}
+
+	t.Run("default bound", func(t *testing.T) {
+		b := connect(t, "", 150*time.Millisecond)
+		if d := call(context.Background(), b); d > 2*time.Second {
+			t.Fatalf("default call_timeout not enforced — call ran %v", d)
+		}
+	})
+
+	t.Run("per-backend override", func(t *testing.T) {
+		b := connect(t, "150ms", 30*time.Second)
+		if d := call(context.Background(), b); d > 2*time.Second {
+			t.Fatalf("backend call_timeout ignored — call ran %v", d)
+		}
+	})
+
+	t.Run("caller deadline wins", func(t *testing.T) {
+		b := connect(t, "", 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+		defer cancel()
+		if d := call(ctx, b); d > 2*time.Second {
+			t.Fatalf("caller's tighter deadline lost to call_timeout — call ran %v", d)
+		}
+	})
+}
+
+// The agent's formal ask: toolhost__request queues unapproved names in the
+// config without widening the surface; a human approve answers (and
+// consumes) the request. Over the real wire.
+func TestRequestEndToEnd(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	up := fixtureUpstream(t)
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "toolhost.json")
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := l.Addr().String()
+	_ = l.Close()
+
+	cfg := &config.File{
+		Token:    "test-token",
+		Listen:   addr,
+		AuditLog: filepath.Join(dir, "audit.jsonl"),
+		Backends: map[string]*config.Backend{
+			"up": {Transport: "http", URL: up.URL},
+		},
+		Approved: []string{"up__echo"}, // up__secret discovered but NOT approved
+	}
+	if err := cfg.Save(cfgPath); err != nil {
+		t.Fatal(err)
+	}
+
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- app.Serve(ctx, cfgPath, io.Discard, false) }()
+	defer func() {
+		cancel()
+		if err := <-serveDone; err != nil {
+			t.Fatalf("serve: %v", err)
+		}
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := http.Get("http://" + addr + "/healthz"); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("serve never came up")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0"}, nil)
+	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
+		Endpoint:   "http://" + addr + "/mcp",
+		HTTPClient: &http.Client{Transport: authTransport{token: "test-token"}},
+	}, nil)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer session.Close()
+
+	call := func(name string, args map[string]any) *mcp.CallToolResult {
+		t.Helper()
+		res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: args})
+		if err != nil {
+			t.Fatalf("call %s: %v", name, err)
+		}
+		return res
+	}
+	text := func(res *mcp.CallToolResult) string {
+		return res.Content[0].(*mcp.TextContent).Text
+	}
+
+	// Requesting an already-approved tool is refused — the queue is for
+	// asks, not approvals-that-exist.
+	res := call("toolhost__request", map[string]any{"names": []string{"up__echo"}})
+	if !res.IsError || !strings.Contains(text(res), "already approved") {
+		t.Fatalf("request approved tool: want refusal, got %v", text(res))
+	}
+
+	// The real ask lands in the config — and the tool stays uncallable.
+	res = call("toolhost__request", map[string]any{
+		"names":  []string{"up__secret"},
+		"reason": "need it for the task",
+	})
+	if res.IsError {
+		t.Fatalf("request: %v", text(res))
+	}
+	reloaded, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reloaded.RequestedSet()["up__secret"] {
+		t.Fatalf("request did not persist to config: %+v", reloaded.Requested)
+	}
+	if _, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "up__secret"}); err == nil {
+		t.Fatal("requested tool is callable — a request must not widen the surface")
+	}
+
+	// Same ask again → deduped, not doubled.
+	res = call("toolhost__request", map[string]any{"names": []string{"up__secret"}})
+	if res.IsError || strings.Contains(text(res), `"up__secret",`) {
+		t.Fatalf("dedup: second request should add nothing, got %v", text(res))
+	}
+	reloaded, _ = config.Load(cfgPath)
+	if len(reloaded.Requested) != 1 {
+		t.Fatalf("dedup: want 1 pending request, got %+v", reloaded.Requested)
+	}
+
+	// toolhost__status reports the pending ask to the human.
+	res = call("toolhost__status", map[string]any{})
+	if res.IsError {
+		t.Fatalf("status: %v", text(res))
+	}
+	var report struct {
+		Mode      string                  `json:"mode"`
+		Approved  int                     `json:"approved"`
+		Requested []struct{ Name string } `json:"requested"`
+		Backends  map[string]struct {
+			Up    bool `json:"up"`
+			Tools int  `json:"tools"`
+		} `json:"backends"`
+	}
+	if err := json.Unmarshal([]byte(text(res)), &report); err != nil {
+		t.Fatalf("status payload: %v\n%s", err, text(res))
+	}
+	if report.Approved != 1 || !report.Backends["up"].Up || report.Backends["up"].Tools != 3 {
+		t.Fatalf("status report wrong: %s", text(res))
+	}
+	if len(report.Requested) != 1 || report.Requested[0].Name != "up__secret" {
+		t.Fatalf("status missing the pending request: %s", text(res))
+	}
+
+	// The human answers: approve consumes the request and the tool lands
+	// on the surface.
+	if err := app.EditApprovals(cfgPath, []string{"up__secret"}, true, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, _ = config.Load(cfgPath)
+	if len(reloaded.Requested) != 0 {
+		t.Fatalf("approve left a stale request: %+v", reloaded.Requested)
+	}
+	// The watcher picks up the approval — poll the call itself until the
+	// tool lands on the surface (search reflects config, not the swap).
+	deadline = time.Now().Add(10 * time.Second)
+	for {
+		called, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "up__secret"})
+		if err == nil {
+			if text(called) != "leaked" {
+				t.Fatalf("want leaked, got %q", text(called))
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("approved tool never became callable: %v", err)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// serve --stdio: the same governed surface over a plain pipe. The test
+// drives it through IOTransport — identical newline-delimited JSON, no
+// subprocess needed.
+func TestStdioServeEndToEnd(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	up := fixtureUpstream(t)
+	cfg := &config.File{
+		Backends: map[string]*config.Backend{
+			"up": {Transport: "http", URL: up.URL},
+		},
+		Approved: []string{"up__echo"},
+	}
+
+	ups, errs := app.ConnectBackends(ctx, cfg, nil, nil, nil)
+	if len(errs) > 0 || len(ups) != 1 {
+		t.Fatalf("connect: %v", errs)
+	}
+	defer func() { _ = ups[0].Close() }()
+
+	res, err := core.Resolve(ups, cfg.ApprovedSet(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := frontdoor.NewBare(res, nil, nil)
+
+	// Two pipes: server reads clientWrites→serverReads, writes back the
+	// other way. IOTransport is the same framing StdioTransport uses.
+	serverR, clientW := io.Pipe()
+	clientR, serverW := io.Pipe()
+	go func() {
+		_ = srv.ServeConn(ctx, &mcp.IOTransport{Reader: serverR, Writer: serverW})
+	}()
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0"}, nil)
+	session, err := client.Connect(ctx, &mcp.IOTransport{Reader: clientR, Writer: clientW}, nil)
+	if err != nil {
+		t.Fatalf("stdio connect: %v", err)
+	}
+	defer session.Close()
+
+	listed, err := session.ListTools(ctx, &mcp.ListToolsParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Tools) != 1 || listed.Tools[0].Name != "up__echo" {
+		t.Fatalf("stdio surface: want [up__echo], got %+v", listed.Tools)
+	}
+	called, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "up__echo",
+		Arguments: json.RawMessage(`{"message":"pipe"}`),
+	})
+	if err != nil {
+		t.Fatalf("stdio call: %v", err)
+	}
+	if text := called.Content[0].(*mcp.TextContent).Text; text != "echo:pipe" {
+		t.Fatalf("want echo:pipe, got %q", text)
+	}
 }

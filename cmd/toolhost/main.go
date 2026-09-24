@@ -78,10 +78,28 @@ func main() {
 	case "serve":
 		fs := flag.NewFlagSet("serve", flag.ExitOnError)
 		cfg := fs.String("c", "toolhost.json", "config path")
+		stdio := fs.Bool("stdio", false, "serve MCP over stdin/stdout instead of HTTP")
 		_ = fs.Parse(os.Args[2:])
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		err = app.Serve(ctx, *cfg, os.Stdout)
+		// stdio mode: stdout IS the protocol — status lines go to stderr.
+		w := os.Stdout
+		if *stdio {
+			w = os.Stderr
+		}
+		err = app.Serve(ctx, *cfg, w, *stdio)
+
+	case "status":
+		fs := flag.NewFlagSet("status", flag.ExitOnError)
+		cfg := fs.String("c", "toolhost.json", "config path")
+		_ = fs.Parse(os.Args[2:])
+		err = app.Status(context.Background(), *cfg, os.Stdout)
+
+	case "install", "uninstall":
+		fs := flag.NewFlagSet(os.Args[1], flag.ExitOnError)
+		cfg := fs.String("c", "toolhost.json", "config path")
+		_ = fs.Parse(os.Args[2:])
+		err = app.Install(*cfg, os.Args[1] == "install", os.Stdout)
 
 	case "version":
 		fmt.Println("toolhost", core.Version)
@@ -113,7 +131,11 @@ func usage() {
   toolhost disable    hide approved tools without un-approving them
   toolhost auth       grant upstream OAuth for a backend (browser flow)
   toolhost logout     drop a backend's stored upstream grant
+  toolhost status     gateway health: backends up/down, counts, requests
   toolhost serve      serve /mcp — Authorization: Bearer <token>
+                      --stdio = speak MCP on stdin/stdout (attach to any client)
+  toolhost install    register serve as a service (launchd / systemd --user)
+  toolhost uninstall  remove the service
   toolhost version
 
 all commands take -c <path> (default toolhost.json)

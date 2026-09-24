@@ -87,6 +87,11 @@ Tools are namespaced `backend__tool`.
 { "mode": "stateful" }    // opt-in: session-bearing, for push-capable clients
 ```
 
+`serve --stdio` speaks the same governed surface over stdin/stdout instead
+of HTTP — for clients that only spawn subprocesses (Claude Desktop-class
+hosts). No bearer token: the spawning process owns the pipe. Status lines
+go to stderr; stdout is protocol-only.
+
 **Stateless is the primary design** (SEP-2567 sessionless Streamable HTTP,
 speaking the 2026-07-28 protocol): no `Mcp-Session-Id`, every request
 independent — initialize, `tools/list`, `tools/call` each stand alone.
@@ -105,6 +110,11 @@ auth, same surface — it only adds session state.
 Either way: bearer auth gates `/mcp` before MCP handling, and the SDK's
 DNS-rebinding protection stays on. Changing `mode` needs a restart.
 
+`call_timeout` bounds every upstream call (default `"60s"`, Go duration
+syntax). A per-backend `call_timeout` overrides it; a caller's tighter
+deadline still wins. A hung backend can never hold a call forever — and
+the default hot-reloads for already-connected sessions.
+
 `serve` watches the config file (~1.5s poll): edit `approved`, `enabled`,
 or `backends` — via CLI or by hand — and the live surface swaps in place.
 Stateful clients get `tools/list_changed`; unchanged backend sessions are
@@ -114,7 +124,7 @@ current surface (audited `reload` with the error).
 
 ## The agent-facing control plane
 
-The gateway also serves five meta-tools under the reserved `toolhost__`
+The gateway also serves its own tools under the reserved `toolhost__`
 namespace — always present, unaffected by reloads:
 
 | tool | what it does |
@@ -124,6 +134,8 @@ namespace — always present, unaffected by reloads:
 | `toolhost__call` | call any *enabled* tool by name — the escape hatch for clients that don't refresh on `tools/list_changed` |
 | `toolhost__enable` | move approved tools onto the live surface, right now |
 | `toolhost__disable` | pull tools off the live surface, right now |
+| `toolhost__request` | file an approval request for unapproved tools — queued in `requested`, answered by `toolhost approve` |
+| `toolhost__status` | gateway health: mode, per-backend state, counts, pending requests |
 
 So the agent can self-serve: search the catalog → enable what it needs →
 call it → disable when done. The trust split holds: **agents govern
@@ -131,6 +143,18 @@ call it → disable when done. The trust split holds: **agents govern
 approval stays a human decision (`toolhost approve`). Every agent-side
 enable/disable is audited (`govern` events) and refused calls are too
 (`tool_forbidden`).
+
+The request flow closes the loop without weakening it: `toolhost__request`
+writes `requested` entries (name + reason, deduped) — visible in
+`toolhost status` and `toolhost__status`. Requesting approves nothing;
+`toolhost approve <name>` answers the ask and consumes the queue entry.
+
+```bash
+./toolhost status     # live: mode, backends up/down, counts, pending asks
+                      # down: prints what the config knows, incl. grants
+./toolhost install    # serve as a service — launchd (macOS) / systemd user
+./toolhost uninstall  # stop and remove it
+```
 
 ## What this is not (yet)
 

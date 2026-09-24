@@ -3,6 +3,7 @@
   "token": "th_REPLACE_WITH_OUTPUT_OF_toolhost_init",
   "audit_log": "toolhost_audit.jsonl",
   "mode": "stateless",
+  "call_timeout": "60s",
   "backends": {
     "fs": {
       "transport": "stdio",

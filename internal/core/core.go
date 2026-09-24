@@ -37,6 +37,9 @@ type ToolInfo struct {
 	Description string `json:"description,omitempty"`
 	Approved    bool   `json:"approved"`
 	Enabled     bool   `json:"enabled"`
+	// Requested marks an agent-filed approval request still waiting on a
+	// human — visible so the agent knows it already asked.
+	Requested bool `json:"requested,omitempty"`
 }
 
 // Event is one governed action's evidence — the driven audit port.

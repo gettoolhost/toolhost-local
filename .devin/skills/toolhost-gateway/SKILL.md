@@ -35,32 +35,42 @@ MCP config:
 
 | tool | use |
 |---|---|
-| `toolhost__search` `{query}` | catalog search → qualified names + approved/enabled state |
+| `toolhost__search` `{query}` | catalog search → qualified names + approved/enabled/requested state |
 | `toolhost__list` `{scope}` | `enabled` (default) / `approved` / `all` |
 | `toolhost__enable` `{names[]}` | move approved tools onto the live surface NOW |
 | `toolhost__disable` `{names[]}` | pull tools off NOW (they stay approved) |
 | `toolhost__call` `{name, arguments}` | call any enabled tool by name — works even if your client ignores `tools/list_changed` |
+| `toolhost__request` `{names[], reason}` | file an approval ask — queued in `requested`, a human's `toolhost approve` answers it |
+| `toolhost__status` | read-only gateway health: mode, backends, counts, pending asks |
 
 **The loop**: need a tool → `search` → if approved-but-disabled,
 `enable` it → call it (directly, or via `toolhost__call` if your list
 didn't refresh) → `disable` when done to keep the surface lean.
 
 **Your boundary**: you may move tools between approved and enabled.
-You may NOT approve. If `search` shows `approved: false`, the remedy is
-to ask the human: `toolhost approve <name>` — never try to route around
-it. Every enable/disable/call is written to `toolhost_audit.jsonl`.
+You may NOT approve. If `search` shows `approved: false`, file
+`toolhost__request` with a reason — it lands in `requested` where the
+human sees it (`toolhost status`) — then ask the human to run
+`toolhost approve <name>`. A request approves nothing by itself;
+never try to route around it. Every enable/disable/call/request is
+written to `toolhost_audit.jsonl`.
 
 ## If the gateway is down (connection refused)
 
-It's a local process, not a service:
+It's a local process — check first, restart if needed:
 
 ```bash
 # find it: toolhost.json sits beside the binary (has "listen" + backends)
-./toolhost serve                      # from that dir, or:
-tmux new-session -d -s toolhost './toolhost serve'
+./toolhost status                     # up → live report; down → config view
+./toolhost serve                      # from that dir, or install it once:
+./toolhost install                    # launchd (macOS) / systemd --user (linux)
 ```
 
 `serve` hot-reloads the config file (~2s) — CLI edits apply live.
+
+`serve --stdio` runs the same governed surface over stdin/stdout — for
+clients that only spawn subprocesses. No bearer (the pipe's owner is the
+authority); status lines go to stderr, stdout is protocol-only.
 
 ## Composing gateways (federation)
 

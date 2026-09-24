@@ -107,3 +107,87 @@ func TestMode(t *testing.T) {
 		t.Fatalf("mode lost on round-trip: got %q", loaded.Mode)
 	}
 }
+
+func TestCallTimeoutValidation(t *testing.T) {
+	// Absent means "use the default" — valid at both levels.
+	for _, ct := range []string{"", "60s", "2m", "150ms"} {
+		f := &File{Mode: ModeStateless, CallTimeout: ct}
+		if err := f.validate(); err != nil {
+			t.Fatalf("call_timeout %q should validate: %v", ct, err)
+		}
+	}
+	for _, bad := range []string{"abc", "-5s", "0s", "60"} {
+		f := &File{Mode: ModeStateless, CallTimeout: bad}
+		if err := f.validate(); err == nil {
+			t.Fatalf("call_timeout %q should fail validation", bad)
+		}
+	}
+
+	// Per-backend: same rules — absent is inherit, garbage fails closed.
+	good := &File{Mode: ModeStateless, Backends: map[string]*Backend{
+		"b": {Transport: "http", URL: "http://x", CallTimeout: "30s"},
+	}}
+	if err := good.validate(); err != nil {
+		t.Fatalf("backend call_timeout should validate: %v", err)
+	}
+	bad := &File{Mode: ModeStateless, Backends: map[string]*Backend{
+		"b": {Transport: "http", URL: "http://x", CallTimeout: "soon"},
+	}}
+	if err := bad.validate(); err == nil || !strings.Contains(err.Error(), "call_timeout") {
+		t.Fatalf("backend call_timeout %q should fail, got %v", "soon", err)
+	}
+
+	// Absent → the documented default after load.
+	path := filepath.Join(t.TempDir(), "toolhost.json")
+	f := &File{Token: "t"}
+	if err := f.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.CallTimeout != DefaultCallTimeout {
+		t.Fatalf("default call_timeout: want %q, got %q", DefaultCallTimeout, loaded.CallTimeout)
+	}
+}
+
+func TestRequestTools(t *testing.T) {
+	f := &File{Approved: []string{"b__ok"}}
+
+	// Qualified + unapproved → queued with the reason.
+	added, err := f.RequestTools("need it", "b__want")
+	if err != nil || len(added) != 1 {
+		t.Fatalf("request: %v %v", added, err)
+	}
+	if !f.RequestedSet()["b__want"] || f.Requested[0].Reason != "need it" {
+		t.Fatalf("request not recorded: %+v", f.Requested)
+	}
+
+	// Deduped — a second ask adds nothing.
+	added, err = f.RequestTools("again", "b__want")
+	if err != nil || len(added) != 0 || len(f.Requested) != 1 {
+		t.Fatalf("dedup: %+v %v", f.Requested, err)
+	}
+
+	// Bad names and already-approved tools are refused.
+	if _, err := f.RequestTools("", "badname"); err == nil {
+		t.Fatal("unqualified name accepted")
+	}
+	if _, err := f.RequestTools("", "b__ok"); err == nil || !strings.Contains(err.Error(), "already approved") {
+		t.Fatalf("approved name accepted: %v", err)
+	}
+
+	// A request never widens the gate on its own.
+	if f.IsApproved("b__want") || f.IsEnabled("b__want") {
+		t.Fatal("a request must not approve or enable")
+	}
+
+	// Approve consumes the request — the ask is answered.
+	if _, err := f.Approve("b__want"); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Requested) != 0 || !f.IsApproved("b__want") {
+		t.Fatalf("approve should consume the request: %+v", f.Requested)
+	}
+}

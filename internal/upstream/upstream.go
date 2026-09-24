@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"golang.org/x/oauth2"
@@ -46,6 +47,9 @@ type Options struct {
 	OpenURL func(string) error
 	// Out is where the interactive fetcher prints the authorization URL.
 	Out io.Writer
+	// DefaultCallTimeout bounds upstream calls for backends without their
+	// own call_timeout. Zero means rely on the caller's deadline alone.
+	DefaultCallTimeout time.Duration
 }
 
 // Backend is a connected upstream MCP server.
@@ -54,6 +58,8 @@ type Backend struct {
 	session     *mcp.ClientSession
 	tools       []*mcp.Tool
 	passthrough bool
+	callTimeout time.Duration
+	opts        *Options
 }
 
 // Passthrough reports whether this upstream is a federated gateway — its
@@ -86,7 +92,15 @@ func Connect(ctx context.Context, name string, cfg *config.Backend, opts *Option
 		return nil, fmt.Errorf("backend %q: list tools: %w", name, err)
 	}
 
-	return &Backend{namespace: name, session: session, tools: tools, passthrough: cfg.Passthrough}, nil
+	// Per-backend override is parsed once; the shared default is read from
+	// opts per call so a hot-reloaded call_timeout reaches even unchanged
+	// sessions.
+	var timeout time.Duration
+	if cfg.CallTimeout != "" {
+		timeout, _ = time.ParseDuration(cfg.CallTimeout)
+	}
+	return &Backend{namespace: name, session: session, tools: tools,
+		passthrough: cfg.Passthrough, callTimeout: timeout, opts: opts}, nil
 }
 
 func (b *Backend) Namespace() string  { return b.namespace }
@@ -95,6 +109,17 @@ func (b *Backend) Tools() []*mcp.Tool { return b.tools }
 func (b *Backend) Call(ctx context.Context, tool string, args json.RawMessage) (*mcp.CallToolResult, error) {
 	dctx, cancel := detached(ctx)
 	defer cancel()
+	// The per-backend override wins; the shared default is read live so a
+	// hot-reloaded call_timeout reaches sessions that were kept.
+	timeout := b.callTimeout
+	if timeout <= 0 && b.opts != nil {
+		timeout = b.opts.DefaultCallTimeout
+	}
+	if timeout > 0 {
+		var tcancel context.CancelFunc
+		dctx, tcancel = context.WithTimeout(dctx, timeout)
+		defer tcancel()
+	}
 	return b.session.CallTool(dctx, &mcp.CallToolParams{
 		Name:      tool,
 		Arguments: args,

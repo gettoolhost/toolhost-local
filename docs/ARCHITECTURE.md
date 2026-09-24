@@ -67,16 +67,38 @@ subprocesses; adapters own those. One dependency direction: adapters → core.
   otherwise a new-protocol downstream would stamp 2026-07-28 onto calls
   to a legacy upstream and fail as Bad Request. Lifetime propagates;
   transport-scoped values do not.
-- **The gateway is a tool too.** `frontdoor` registers five meta-tools —
-  `toolhost__{search,list,call,enable,disable}` — outside the resolved
-  set, so `Reload` can never drop them. They call into `liveSet`: search
-  and list read the discovered catalog plus governance state; enable and
-  disable write through the same config file the CLI edits (approval gate
-  included) then reload synchronously; `call` dispatches through the live
-  set at call time — the escape hatch for clients that ignore
-  `tools/list_changed`. Agents govern `enabled`; humans govern
-  `approved`. Agent-initiated governance is audited as `govern` events;
-  refused calls as `tool_forbidden`.
+- **The gateway is a tool too.** `frontdoor` registers seven meta-tools —
+  `toolhost__{search,list,call,enable,disable,request,status}` — outside
+  the resolved set, so `Reload` can never drop them. They call into
+  `liveSet`: search and list read the discovered catalog plus governance
+  state; enable and disable write through the same config file the CLI
+  edits (approval gate included) then reload synchronously; `call`
+  dispatches through the live set at call time — the escape hatch for
+  clients that ignore `tools/list_changed`. `request` queues qualified
+  names in the config's `requested` list — an agent's formal ask, audited
+  as `govern`, which `toolhost approve` answers and consumes; a request
+  never widens the surface. `status` is the read-only report `toolhost
+  status` prints (the CLI calls it over the live endpoint, falling back
+  to a config-only view when the gateway is down). Agents govern
+  `enabled`; humans govern `approved`. Agent-initiated governance is
+  audited as `govern` events; refused calls as `tool_forbidden`.
+- **Every call is bounded.** `call_timeout` (top-level default `"60s"`,
+  per-backend override) wraps the upstream call after the ctx is
+  detached. A caller's tighter deadline still wins — `context.WithTimeout`
+  under an earlier parent deadline never widens it. The shared default is
+  read from `upstream.Options` per call, so a hot-reload reaches sessions
+  that were kept.
+- **The front door isn't only HTTP.** `serve --stdio` attaches the same
+  governed surface to `StdioTransport` for spawn-only clients — no bearer
+  (the spawning process owns the pipe), status lines to stderr, stdout
+  reserved for protocol. `frontdoor.NewBare`/`ServeConn` split the server
+  from the HTTP wrapper so the swap is a different `Connect`, not a
+  second stack.
+- **It can be a service.** `toolhost install` writes the platform user
+  unit — `~/Library/LaunchAgents` on macOS (bootout+bootstrap),
+  `~/.config/systemd/user` on Linux (enable --now) — running the resolved
+  binary and config with restart-on-failure. `uninstall` stops and removes
+  it. Deliberately a user service: no root, no daemon, no deploy system.
 - **Fail closed.** A backend that won't connect contributes zero tools
   (warned, audited `backend_error`, never silently callable). A tool whose
   name can't be safely namespaced is skipped. A duplicate qualified name is

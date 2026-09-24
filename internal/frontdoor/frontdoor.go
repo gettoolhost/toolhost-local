@@ -38,9 +38,14 @@ type Meta struct {
 	List    func(ctx context.Context, scope string) ([]core.ToolInfo, error)
 	Enable  func(ctx context.Context, names []string) ([]string, error)
 	Disable func(ctx context.Context, names []string) ([]string, error)
+	// Request files an approval request for unapproved tools — the agent's
+	// formal ask; a human still approves. Returns the newly queued names.
+	Request func(ctx context.Context, names []string, reason string) ([]string, error)
 	// Status reports one qualified name's governance state — used to give
 	// precise refusal reasons ("approved but disabled" vs "not approved").
 	Status func(name string) (core.ToolInfo, bool)
+	// Report returns the live gateway status for toolhost__status.
+	Report func() any
 }
 
 // Options controls front-door serving. Stateless is the primary mode
@@ -63,27 +68,10 @@ func New(res *core.Resolution, token string, sink core.AuditSink, meta *Meta, op
 	if token == "" {
 		return nil, fmt.Errorf("front door requires a bearer token")
 	}
-	if sink == nil {
-		sink = discard{}
-	}
-
-	srv := mcp.NewServer(&mcp.Implementation{
-		Name:    "toolhost",
-		Version: core.Version,
-	}, &mcp.ServerOptions{Capabilities: &mcp.ServerCapabilities{
-		Tools: &mcp.ToolCapabilities{ListChanged: true},
-	}})
-
-	s := &Server{mcp: srv, sink: sink, live: map[string]core.ResolvedTool{}}
-	for _, rt := range res.Tools {
-		s.addTool(rt)
-	}
-	if meta != nil {
-		s.addMetaTools(meta)
-	}
+	s := buildServer(res, sink, meta)
 
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
-		return srv
+		return s.mcp
 	}, &mcp.StreamableHTTPOptions{Stateless: opts != nil && opts.Stateless})
 
 	mux := http.NewServeMux()
@@ -97,7 +85,51 @@ func New(res *core.Resolution, token string, sink core.AuditSink, meta *Meta, op
 	return s, nil
 }
 
+// NewBare builds the governed surface with no HTTP wiring — for the stdio
+// front door, where the pipe's owner IS the authority (no bearer needed).
+func NewBare(res *core.Resolution, sink core.AuditSink, meta *Meta) *Server {
+	return buildServer(res, sink, meta)
+}
+
+func buildServer(res *core.Resolution, sink core.AuditSink, meta *Meta) *Server {
+	if sink == nil {
+		sink = discard{}
+	}
+	srv := mcp.NewServer(&mcp.Implementation{
+		Name:    "toolhost",
+		Version: core.Version,
+	}, &mcp.ServerOptions{Capabilities: &mcp.ServerCapabilities{
+		Tools: &mcp.ToolCapabilities{ListChanged: true},
+	}})
+	s := &Server{mcp: srv, sink: sink, live: map[string]core.ResolvedTool{}}
+	for _, rt := range res.Tools {
+		s.addTool(rt)
+	}
+	if meta != nil {
+		s.addMetaTools(meta)
+	}
+	return s
+}
+
 func (s *Server) Handler() http.Handler { return s.handler }
+
+// ServeStdio speaks MCP over stdin/stdout — the same governed surface as a
+// stdio server, for clients that only spawn subprocesses. Blocks until the
+// pipe closes or ctx ends. Reloads still land: AddTool/RemoveTools emit
+// tools/list_changed down the pipe like any notification.
+func (s *Server) ServeStdio(ctx context.Context) error {
+	return s.ServeConn(ctx, &mcp.StdioTransport{})
+}
+
+// ServeConn serves the governed surface over an arbitrary transport —
+// stdio in production, in-process pipes in tests.
+func (s *Server) ServeConn(ctx context.Context, t mcp.Transport) error {
+	session, err := s.mcp.Connect(ctx, t, nil)
+	if err != nil {
+		return err
+	}
+	return session.Wait()
+}
 
 // addTool registers one resolved tool; the handler closes over its upstream
 // so dispatch is wiring, not a lookup. live is updated under s.mu.
@@ -287,6 +319,46 @@ func (s *Server) addMetaTools(m *Meta) {
 			return errResult(err.Error()), nil
 		}
 		return jsonResult(map[string]any{"disabled": changed}), nil
+	})
+
+	srv.AddTool(&mcp.Tool{
+		Name: "toolhost__request",
+		Description: "Ask for unapproved tools by qualified name — files a request the " +
+			"human reviews (toolhost status shows it, toolhost approve answers it). " +
+			"Requesting is not approval: the tool stays locked until a human approves.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"names":  map[string]any{"type": "array", "description": "qualified tool names to request"},
+				"reason": map[string]any{"type": "string", "description": "why these tools are needed"},
+			},
+			"required": []string{"names"},
+		},
+	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		var a struct {
+			Names  []string `json:"names"`
+			Reason string   `json:"reason"`
+		}
+		if err := json.Unmarshal(req.Params.Arguments, &a); err != nil {
+			return errResult("bad arguments: " + err.Error()), nil
+		}
+		queued, err := m.Request(ctx, a.Names, a.Reason)
+		if err != nil {
+			return errResult(err.Error()), nil
+		}
+		return jsonResult(map[string]any{
+			"requested": queued,
+			"note":      "a human reviews requests — nothing is approved yet",
+		}), nil
+	})
+
+	srv.AddTool(&mcp.Tool{
+		Name: "toolhost__status",
+		Description: "Report gateway health: serving mode, per-backend state and tool " +
+			"counts, approved/enabled/requested totals. Read-only.",
+		InputSchema: map[string]any{"type": "object"},
+	}, func(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return jsonResult(m.Report()), nil
 	})
 }
 

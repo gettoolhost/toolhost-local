@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"time"
 
 	"toolhost/internal/namespace"
 )
@@ -33,6 +34,11 @@ type Backend struct {
 	// trusted as-is instead of being re-namespaced. Its own toolhost__*
 	// meta-tools are dropped — the outer gateway has its own control plane.
 	Passthrough bool `json:"passthrough,omitempty"`
+
+	// CallTimeout overrides the top-level call_timeout for this backend —
+	// a Go duration ("30s", "2m"). A client-supplied tighter deadline still
+	// wins; this bounds how long a hung backend may hold a call.
+	CallTimeout string `json:"call_timeout,omitempty"`
 }
 
 // Auth configures how toolhost authenticates TO an upstream server —
@@ -82,6 +88,25 @@ type File struct {
 	// means only enabled∩approved is visible. Pointer so "absent" and
 	// "explicitly empty" stay distinct — [] must not collapse into all.
 	Enabled *[]string `json:"enabled,omitempty"`
+
+	// CallTimeout bounds every upstream tool call — a Go duration,
+	// default "60s". A caller's tighter deadline still wins. Per-backend
+	// call_timeout overrides it. A hung backend can never hold a call
+	// forever.
+	CallTimeout string `json:"call_timeout,omitempty"`
+
+	// Requested is the agent's pending ask: qualified names an agent put
+	// on the record via toolhost__request, with its reason. Humans review
+	// it (`toolhost status`) and approve consumes entries. Agents can
+	// write it; only humans turn requests into approvals.
+	Requested []Request `json:"requested,omitempty"`
+}
+
+// Request is one agent-filed approval request.
+type Request struct {
+	Name   string    `json:"name"`
+	Reason string    `json:"reason,omitempty"`
+	At     time.Time `json:"at"`
 }
 
 const (
@@ -93,6 +118,9 @@ const (
 	// need pushed notifications/tools/list_changed.
 	ModeStateless = "stateless"
 	ModeStateful  = "stateful"
+
+	// DefaultCallTimeout bounds upstream calls when the config doesn't say.
+	DefaultCallTimeout = "60s"
 )
 
 func Load(path string) (*File, error) {
@@ -121,6 +149,9 @@ func (f *File) applyDefaults() {
 	if f.AuditLog == "" {
 		f.AuditLog = DefaultAuditLog
 	}
+	if f.CallTimeout == "" {
+		f.CallTimeout = DefaultCallTimeout
+	}
 	if f.Backends == nil {
 		f.Backends = map[string]*Backend{}
 	}
@@ -132,6 +163,11 @@ func (f *File) applyDefaults() {
 func (f *File) validate() error {
 	if f.Mode != ModeStateless && f.Mode != ModeStateful {
 		return fmt.Errorf("mode must be %q or %q", ModeStateless, ModeStateful)
+	}
+	if f.CallTimeout != "" {
+		if _, err := parseTimeout(f.CallTimeout); err != nil {
+			return fmt.Errorf("call_timeout: %w", err)
+		}
 	}
 	for name, b := range f.Backends {
 		if name == "toolhost" {
@@ -154,6 +190,11 @@ func (f *File) validate() error {
 			}
 		default:
 			return fmt.Errorf("backend %q: transport must be %q, %q or %q", name, "stdio", "http", "sse")
+		}
+		if b.CallTimeout != "" {
+			if _, err := parseTimeout(b.CallTimeout); err != nil {
+				return fmt.Errorf("backend %q call_timeout: %w", name, err)
+			}
 		}
 		if err := b.validateAuth(name); err != nil {
 			return err
@@ -346,7 +387,55 @@ func (f *File) Disable(names ...string) ([]string, error) {
 	return removed, nil
 }
 
-// Approve adds qualified names; returns those actually added.
+// parseTimeout validates a duration string — must parse and be positive.
+func parseTimeout(s string) (time.Duration, error) {
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("not a duration (want e.g. \"60s\", \"2m\"): %w", err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("must be positive, got %q", s)
+	}
+	return d, nil
+}
+
+// RequestTools records agent approval requests: qualified names, deduped,
+// newest-last. Requesting is not approval — a human still has to approve.
+func (f *File) RequestTools(reason string, names ...string) ([]string, error) {
+	have := make(map[string]bool, len(f.Requested))
+	for _, r := range f.Requested {
+		have[r.Name] = true
+	}
+	approved := f.ApprovedSet()
+	var added []string
+	for _, n := range names {
+		if _, _, err := namespace.Split(n); err != nil {
+			return nil, fmt.Errorf("%q is not a qualified name (want backend__tool): %w", n, err)
+		}
+		if approved[n] {
+			return nil, fmt.Errorf("%q is already approved — enable it with toolhost__enable", n)
+		}
+		if have[n] {
+			continue
+		}
+		f.Requested = append(f.Requested, Request{Name: n, Reason: reason, At: time.Now().UTC()})
+		have[n] = true
+		added = append(added, n)
+	}
+	return added, nil
+}
+
+// RequestedSet is the lookup form — name → pending request.
+func (f *File) RequestedSet() map[string]bool {
+	set := make(map[string]bool, len(f.Requested))
+	for _, r := range f.Requested {
+		set[r.Name] = true
+	}
+	return set
+}
+
+// Approve adds qualified names; returns those actually added. Approved
+// names drop out of `requested` — the request has been answered.
 func (f *File) Approve(names ...string) ([]string, error) {
 	set := f.ApprovedSet()
 	var added []string
@@ -363,6 +452,16 @@ func (f *File) Approve(names ...string) ([]string, error) {
 	if len(added) > 0 {
 		f.Approved = append(f.Approved, added...)
 		sort.Strings(f.Approved)
+	}
+	// Answered requests leave the queue — approval is the response.
+	if len(f.Requested) > 0 {
+		kept := f.Requested[:0]
+		for _, r := range f.Requested {
+			if !set[r.Name] {
+				kept = append(kept, r)
+			}
+		}
+		f.Requested = kept
 	}
 	return added, nil
 }

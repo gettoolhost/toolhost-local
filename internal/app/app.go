@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +19,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"toolhost/internal/audit"
 	"toolhost/internal/config"
@@ -268,14 +271,133 @@ func Logout(path, name string, w io.Writer) error {
 	return nil
 }
 
-// Serve connects all configured backends, resolves the approved set, and
-// serves /mcp until ctx is canceled.
-func Serve(ctx context.Context, path string, w io.Writer) error {
+// bearerTransport is the downstream-auth leg: the config's token on every
+// request — the same header an agent's MCP client sends.
+type bearerTransport struct{ token string }
+
+func (t bearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	clone := r.Clone(r.Context())
+	clone.Header.Set("Authorization", "Bearer "+t.token)
+	return http.DefaultTransport.RoundTrip(clone)
+}
+
+// Status reports gateway health. Live path: one tools/call to
+// toolhost__status over the real endpoint (works in both serving modes —
+// the SDK negotiates). If the gateway isn't running, it still prints what
+// the config knows: backends, counts, pending requests, stored grants.
+func Status(ctx context.Context, path string, w io.Writer) error {
 	f, err := config.Load(path)
 	if err != nil {
 		return err
 	}
-	if f.Token == "" {
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "toolhost-cli", Version: core.Version}, nil)
+	connCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	session, err := client.Connect(connCtx, &mcp.StreamableClientTransport{
+		Endpoint:   "http://" + f.Listen + "/mcp",
+		HTTPClient: &http.Client{Transport: bearerTransport{f.Token}},
+	}, nil)
+	cancel()
+	if err != nil {
+		fmt.Fprintf(w, "gateway: DOWN — %s/mcp not reachable\n\n", f.Listen)
+		printConfigStatus(f, path, w)
+		return nil
+	}
+	defer session.Close()
+
+	callCtx, cancel2 := context.WithTimeout(ctx, 10*time.Second)
+	res, err := session.CallTool(callCtx, &mcp.CallToolParams{Name: "toolhost__status"})
+	cancel2()
+	if err != nil {
+		return fmt.Errorf("status call: %w", err)
+	}
+	if len(res.Content) == 0 {
+		return fmt.Errorf("status call: empty response")
+	}
+	text, ok := res.Content[0].(*mcp.TextContent)
+	if !ok {
+		return fmt.Errorf("status call: unexpected content")
+	}
+	var report struct {
+		Mode      string `json:"mode"`
+		Listen    string `json:"listen"`
+		Approved  int    `json:"approved"`
+		Enabled   int    `json:"enabled"`
+		Requested []struct {
+			Name   string `json:"name"`
+			Reason string `json:"reason"`
+		} `json:"requested"`
+		Backends map[string]struct {
+			Transport string `json:"transport"`
+			Tools     int    `json:"tools"`
+			Up        bool   `json:"up"`
+		} `json:"backends"`
+	}
+	if err := json.Unmarshal([]byte(text.Text), &report); err != nil {
+		return fmt.Errorf("status call: parse: %w", err)
+	}
+
+	fmt.Fprintf(w, "gateway: UP — http://%s/mcp (%s mode)\n", report.Listen, report.Mode)
+	fmt.Fprintf(w, "tools:   %d enabled / %d approved\n", report.Enabled, report.Approved)
+	for _, name := range sortedKeys(report.Backends) {
+		b := report.Backends[name]
+		state := "down"
+		if b.Up {
+			state = "up"
+		}
+		fmt.Fprintf(w, "backend  %-12s %-6s %s, %d tools\n", name, state, b.Transport, b.Tools)
+	}
+	if len(report.Requested) > 0 {
+		fmt.Fprintln(w, "pending agent requests:")
+		for _, r := range report.Requested {
+			fmt.Fprintf(w, "  %s — %s\n", r.Name, r.Reason)
+		}
+	}
+	return nil
+}
+
+// printConfigStatus is the down-gateway view — everything knowable without
+// a live process: configured backends, gate counts, pending requests, and
+// which oauth backends hold stored grants.
+func printConfigStatus(f *config.File, path string, w io.Writer) {
+	fmt.Fprintf(w, "config:  %s (mode %s)\n", path, f.Mode)
+	for _, name := range sortedKeys(f.Backends) {
+		b := f.Backends[name]
+		fmt.Fprintf(w, "backend  %-12s configured  %s\n", name, b.Transport)
+	}
+	en, has := f.EnabledSet()
+	if has {
+		fmt.Fprintf(w, "tools:   %d enabled / %d approved\n", len(en), len(f.ApprovedSet()))
+	} else {
+		fmt.Fprintf(w, "tools:   %d approved (all enabled — no allowlist)\n", len(f.ApprovedSet()))
+	}
+	for _, r := range f.Requested {
+		fmt.Fprintf(w, "requested %s — %s\n", r.Name, r.Reason)
+	}
+	if store, err := oauth.OpenStore(oauth.StorePath(path)); err == nil {
+		for _, name := range sortedKeys(f.Backends) {
+			if f.Backends[name].Auth != nil && f.Backends[name].Auth.Type == "oauth" {
+				if store.Get(name) != nil {
+					fmt.Fprintf(w, "grant    %-12s stored\n", name)
+				} else {
+					fmt.Fprintf(w, "grant    %-12s MISSING — run: toolhost auth %s\n", name, name)
+				}
+			}
+		}
+	}
+}
+
+// Serve connects all configured backends, resolves the approved set, and
+// serves until ctx is canceled. stdio=false: HTTP /mcp with bearer. stdio=
+// true: MCP over stdin/stdout — the whole gateway attachable to any client
+// that spawns subprocesses; no bearer (the spawning process owns the pipe),
+// status lines must go to w=stderr (stdout is the protocol).
+func Serve(ctx context.Context, path string, w io.Writer, stdio bool) error {
+	f, err := config.Load(path)
+	if err != nil {
+		return err
+	}
+	if !stdio && f.Token == "" {
 		return fmt.Errorf("config %s has no token — run toolhost init or set \"token\"", path)
 	}
 
@@ -311,7 +433,7 @@ func Serve(ctx context.Context, path string, w io.Writer) error {
 		w:     w,
 		ups:   map[string]core.Upstream{},
 		cfgs:  map[string]*config.Backend{},
-		opts:  &upstream.Options{Tokens: tokens, Out: io.Discard},
+		opts:  &upstream.Options{Tokens: tokens, Out: io.Discard, DefaultCallTimeout: callTimeout(f)},
 		token: f.Token, listen: f.Listen, auditLog: f.AuditLog,
 		mode: f.Mode,
 	}
@@ -320,6 +442,15 @@ func Serve(ctx context.Context, path string, w io.Writer) error {
 	}
 	for name, cfg := range f.Backends {
 		live.cfgs[name] = cfg
+	}
+
+	if stdio {
+		srv := frontdoor.NewBare(res, sink, live.meta())
+		live.fd = srv
+		go live.watch(ctx)
+		fmt.Fprintf(w, "toolhost %s serving %d approved tools over stdio (audit: %s, watching config)\n",
+			core.Version, len(res.Tools), f.AuditLog)
+		return srv.ServeStdio(ctx)
 	}
 
 	srv, err := frontdoor.New(res, f.Token, sink, live.meta(),
@@ -413,6 +544,8 @@ func (l *liveSet) reload(ctx context.Context) {
 	if f.Token != l.token || f.Listen != l.listen || f.AuditLog != l.auditLog || f.Mode != l.mode {
 		fmt.Fprintln(l.w, "reload: listen/token/audit_log/mode changes take effect on restart — keeping current values")
 	}
+	// call_timeout is hot-reloadable — it applies per call, not per session.
+	l.opts.DefaultCallTimeout = callTimeout(f)
 
 	var ups []core.Upstream
 	for _, name := range sortedKeys(f.Backends) {
@@ -470,7 +603,9 @@ func (l *liveSet) meta() *frontdoor.Meta {
 		List:    l.metaList,
 		Enable:  l.metaEnable,
 		Disable: l.metaDisable,
+		Request: l.metaRequest,
 		Status:  l.metaStatus,
+		Report:  l.metaReport,
 	}
 }
 
@@ -483,6 +618,7 @@ func (l *liveSet) catalog() []core.ToolInfo {
 	}
 	approved := f.ApprovedSet()
 	enSet, hasEn := f.EnabledSet()
+	requested := f.RequestedSet()
 	var out []core.ToolInfo
 	for _, ns := range sortedKeys(l.ups) {
 		for _, t := range l.ups[ns].Tools() {
@@ -495,6 +631,7 @@ func (l *liveSet) catalog() []core.ToolInfo {
 				Description: t.Description,
 				Approved:    approved[q],
 				Enabled:     approved[q] && (!hasEn || enSet[q]),
+				Requested:   requested[q],
 			})
 		}
 	}
@@ -578,6 +715,72 @@ func (l *liveSet) metaDisable(ctx context.Context, names []string) ([]string, er
 	return changed, nil
 }
 
+// metaRequest is the agent's formal ask: queue qualified names in the
+// config's `requested` list. It writes the same file the CLI edits — the
+// watcher picks it up — but a request never widens the surface; only a
+// human `toolhost approve` does.
+func (l *liveSet) metaRequest(_ context.Context, names []string, reason string) ([]string, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	f, err := config.Load(l.path)
+	if err != nil {
+		return nil, err
+	}
+	queued, err := f.RequestTools(reason, names...)
+	if err != nil {
+		return nil, err
+	}
+	if err := f.Save(l.path); err != nil {
+		return nil, err
+	}
+	l.sink.Record(core.Event{TS: time.Now(), Kind: core.EventGovern, Tool: "request:" + strings.Join(names, ",")})
+	return queued, nil
+}
+
+// metaReport is the gateway's live health — the data `toolhost status`
+// prints and toolhost__status returns. Callers hold no lock here; it takes
+// its own.
+func (l *liveSet) metaReport() any {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	f, err := config.Load(l.path)
+	if err != nil {
+		f = &config.File{}
+	}
+
+	type backendState struct {
+		Transport string `json:"transport"`
+		Tools     int    `json:"tools"`
+		Up        bool   `json:"up"`
+	}
+	backends := map[string]backendState{}
+	for name, cfg := range l.cfgs {
+		b := backendState{Transport: cfg.Transport}
+		if up, ok := l.ups[name]; ok {
+			b.Up = true
+			b.Tools = len(up.Tools())
+		}
+		backends[name] = b
+	}
+	var approved, enabled int
+	for _, info := range l.catalog() {
+		if info.Approved {
+			approved++
+		}
+		if info.Enabled {
+			enabled++
+		}
+	}
+	return map[string]any{
+		"mode":      l.mode,
+		"listen":    l.listen,
+		"backends":  backends,
+		"approved":  approved,
+		"enabled":   enabled,
+		"requested": f.Requested,
+	}
+}
+
 func (l *liveSet) metaStatus(name string) (core.ToolInfo, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -598,7 +801,7 @@ func ConnectBackends(ctx context.Context, f *config.File, tokens *oauth.Store, s
 	}
 	var ups []core.Upstream
 	errs := map[string]error{}
-	opts := &upstream.Options{Tokens: tokens, Out: io.Discard}
+	opts := &upstream.Options{Tokens: tokens, Out: io.Discard, DefaultCallTimeout: callTimeout(f)}
 	for _, name := range sortedKeys(f.Backends) {
 		connectCtx, cancel := context.WithTimeout(ctx, connectTimeout)
 		up, err := upstream.Connect(connectCtx, name, f.Backends[name], opts)
@@ -612,6 +815,17 @@ func ConnectBackends(ctx context.Context, f *config.File, tokens *oauth.Store, s
 		ups = append(ups, up)
 	}
 	return ups, errs
+}
+
+// callTimeout parses the configured bound; config validation already ran,
+// so an unparsable value can't arrive — the fallback is the documented
+// default anyway.
+func callTimeout(f *config.File) time.Duration {
+	if d, err := time.ParseDuration(f.CallTimeout); err == nil && d > 0 {
+		return d
+	}
+	d, _ := time.ParseDuration(config.DefaultCallTimeout)
+	return d
 }
 
 func closeAll(ups []core.Upstream) {
