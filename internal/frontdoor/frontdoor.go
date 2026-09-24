@@ -43,10 +43,23 @@ type Meta struct {
 	Status func(name string) (core.ToolInfo, bool)
 }
 
+// Options controls front-door serving. Stateless is the primary mode
+// (SEP-2567 sessionless): no Mcp-Session-Id, each request gets a temporary
+// session — pushed tools/list_changed can't reach stateless clients (the
+// toolhost__* meta-tools are the pull-based path), but reload, bearer auth,
+// and every governed call work unchanged. Legacy-protocol clients are
+// still served sessionlessly. Stateful is the compat opt-in for clients
+// that must hold a session for pushed list-changes. DNS rebinding
+// protection stays on either way (SDK default: non-localhost Host headers
+// on localhost addresses get 403).
+type Options struct {
+	Stateless bool
+}
+
 // New builds the front door over a Resolution. Each resolved tool becomes a
 // go-sdk registration whose handler closes over its upstream — dispatch is
 // wiring, not a lookup.
-func New(res *core.Resolution, token string, sink core.AuditSink, meta *Meta) (*Server, error) {
+func New(res *core.Resolution, token string, sink core.AuditSink, meta *Meta, opts *Options) (*Server, error) {
 	if token == "" {
 		return nil, fmt.Errorf("front door requires a bearer token")
 	}
@@ -71,7 +84,7 @@ func New(res *core.Resolution, token string, sink core.AuditSink, meta *Meta) (*
 
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 		return srv
-	}, nil)
+	}, &mcp.StreamableHTTPOptions{Stateless: opts != nil && opts.Stateless})
 
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", bearer(token, sink, mcpHandler))

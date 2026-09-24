@@ -93,10 +93,28 @@ func (b *Backend) Namespace() string  { return b.namespace }
 func (b *Backend) Tools() []*mcp.Tool { return b.tools }
 
 func (b *Backend) Call(ctx context.Context, tool string, args json.RawMessage) (*mcp.CallToolResult, error) {
-	return b.session.CallTool(ctx, &mcp.CallToolParams{
+	dctx, cancel := detached(ctx)
+	defer cancel()
+	return b.session.CallTool(dctx, &mcp.CallToolParams{
 		Name:      tool,
 		Arguments: args,
 	})
+}
+
+// detached returns a context carrying ctx's deadline and cancellation but
+// none of its values. Request-scoped values are transport-local: the SDK
+// stores the downstream client's negotiated protocol version in the request
+// ctx, and letting it cross into an upstream call would stamp that version
+// onto requests to a server that may have negotiated something older —
+// rejected as Bad Request. Lifetime crosses the gateway boundary; values
+// never do.
+func detached(ctx context.Context) (context.Context, context.CancelFunc) {
+	dctx, cancel := context.WithCancel(context.Background())
+	if dl, ok := ctx.Deadline(); ok {
+		dctx, cancel = context.WithDeadline(context.Background(), dl)
+	}
+	stop := context.AfterFunc(ctx, cancel)
+	return dctx, func() { stop(); cancel() }
 }
 
 func (b *Backend) Close() error {

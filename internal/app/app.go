@@ -313,6 +313,7 @@ func Serve(ctx context.Context, path string, w io.Writer) error {
 		cfgs:  map[string]*config.Backend{},
 		opts:  &upstream.Options{Tokens: tokens, Out: io.Discard},
 		token: f.Token, listen: f.Listen, auditLog: f.AuditLog,
+		mode: f.Mode,
 	}
 	for _, up := range ups {
 		live.ups[up.Namespace()] = up
@@ -321,7 +322,8 @@ func Serve(ctx context.Context, path string, w io.Writer) error {
 		live.cfgs[name] = cfg
 	}
 
-	srv, err := frontdoor.New(res, f.Token, sink, live.meta())
+	srv, err := frontdoor.New(res, f.Token, sink, live.meta(),
+		&frontdoor.Options{Stateless: f.Mode != config.ModeStateful})
 	if err != nil {
 		return err
 	}
@@ -360,8 +362,10 @@ type liveSet struct {
 	opts *upstream.Options
 
 	// Restart-required fields from the boot config — hot-changing the
-	// listen address, the bearer token, or the audit path is refused.
+	// listen address, the bearer token, the audit path, or the serving
+	// mode is refused.
 	token, listen, auditLog string
+	mode                    string
 }
 
 // watch polls the config file and hot-applies changes: unchanged backend
@@ -406,8 +410,8 @@ func (l *liveSet) reload(ctx context.Context) {
 		l.sink.Record(core.Event{TS: time.Now(), Kind: core.EventReload, Err: err.Error()})
 		return
 	}
-	if f.Token != l.token || f.Listen != l.listen || f.AuditLog != l.auditLog {
-		fmt.Fprintln(l.w, "reload: listen/token/audit_log changes take effect on restart — keeping current values")
+	if f.Token != l.token || f.Listen != l.listen || f.AuditLog != l.auditLog || f.Mode != l.mode {
+		fmt.Fprintln(l.w, "reload: listen/token/audit_log/mode changes take effect on restart — keeping current values")
 	}
 
 	var ups []core.Upstream

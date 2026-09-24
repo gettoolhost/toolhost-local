@@ -25,7 +25,7 @@ subprocesses; adapters own those. One dependency direction: adapters → core.
 | `internal/core` | Domain + ports. `Upstream`, `AuditSink` interfaces; `Resolve` — the one place visibility is decided. |
 | `internal/namespace` | `backend__tool` grammar. Pure functions. |
 | `internal/config` | Driven adapter: JSON config load/save, approve/revoke. |
-| `internal/upstream` | Driven adapter: `core.Upstream` over go-sdk client sessions (stdio via `CommandTransport`, http via `StreamableClientTransport`, sse via `SSEClientTransport`); assembles each backend's upstream auth. |
+| `internal/upstream` | Driven adapter: `core.Upstream` over go-sdk client sessions (stdio via `CommandTransport`, http via `StreamableClientTransport`, sse via `SSEClientTransport`); assembles each backend's upstream auth. `Call` detaches the request ctx — deadline/cancel cross, values never do. |
 | `internal/oauth` | Driven adapter: upstream OAuth — SDK `OAuthHandler` construction (client-credentials, auth-code+PKCE), loopback callback fetcher, `toolhost_tokens.json` grant store. |
 | `internal/audit` | Driven adapter: `core.AuditSink` appending JSONL. |
 | `internal/frontdoor` | Driving adapter: `/mcp` HTTP server — bearer auth, go-sdk `mcp.Server`, registers exactly what `core.Resolve` returns. |
@@ -48,10 +48,25 @@ subprocesses; adapters own those. One dependency direction: adapters → core.
   the surface: `frontdoor.Reload` diffs the live set — unchanged backend
   sessions are kept, changed/removed ones re-dialed or closed — then
   `AddTool`/`RemoveTools` mutate the MCP server, which emits
-  `tools/list_changed`. Config saves are atomic (tmp+rename) so the
+  `tools/list_changed` (reachable by session-bearing clients only — see
+  modes). Config saves are atomic (tmp+rename) so the
   watcher never reads a torn write; an invalid or unresolvable config
   keeps the current surface and audits the failure. `listen`, `token`,
-  `audit_log` still require a restart.
+  `audit_log`, `mode` still require a restart.
+- **Stateless is the primary transport.** `mode` defaults to
+  `"stateless"` (SEP-2567): no `Mcp-Session-Id`, every POST independent.
+  Clients on the 2026-07-28 spec negotiate via `server/discover`; older
+  protocol versions are served sessionlessly — initialize/list/call each
+  stand alone, they just can't receive pushed `tools/list_changed` (the
+  meta-tools are the pull path). `"stateful"` opts back into held sessions
+  for exactly that push. Bearer auth and DNS-rebinding protection apply in
+  both modes.
+- **Transport values never cross the gateway.** The SDK stores the
+  downstream client's negotiated protocol version in the request ctx;
+  `upstream.Call` detaches to a ctx carrying only deadline+cancel —
+  otherwise a new-protocol downstream would stamp 2026-07-28 onto calls
+  to a legacy upstream and fail as Bad Request. Lifetime propagates;
+  transport-scoped values do not.
 - **The gateway is a tool too.** `frontdoor` registers five meta-tools —
   `toolhost__{search,list,call,enable,disable}` — outside the resolved
   set, so `Reload` can never drop them. They call into `liveSet`: search

@@ -64,6 +64,15 @@ type File struct {
 	Token    string              `json:"token"`
 	AuditLog string              `json:"audit_log"`
 	Backends map[string]*Backend `json:"backends"`
+	// Mode selects the front-door serving mode — "stateless" (default) or
+	// "stateful". Stateless is the primary design (SEP-2567 sessionless +
+	// the 2026-07-28 spec): no Mcp-Session-Id, every request independent.
+	// Legacy-protocol clients still work sessionlessly there — initialize,
+	// tools/list, tools/call each stand alone; what they lose is pushed
+	// tools/list_changed, which needs a held session. "stateful" is the
+	// opt-in compat mode for exactly that: session-bearing Streamable HTTP
+	// for clients that must hold Mcp-Session-Id.
+	Mode string `json:"mode,omitempty"`
 	// Approved is the qualified-name list ("backend__tool") that Resolve
 	// intersects with discovery. discovered ≠ approved: everything not on
 	// this list is invisible and uncallable.
@@ -78,6 +87,12 @@ type File struct {
 const (
 	DefaultListen   = "127.0.0.1:8080"
 	DefaultAuditLog = "toolhost_audit.jsonl"
+
+	// ModeStateless is the default serving mode — sessionless Streamable
+	// HTTP. ModeStateful opts into session-bearing mode for clients that
+	// need pushed notifications/tools/list_changed.
+	ModeStateless = "stateless"
+	ModeStateful  = "stateful"
 )
 
 func Load(path string) (*File, error) {
@@ -100,6 +115,9 @@ func (f *File) applyDefaults() {
 	if f.Listen == "" {
 		f.Listen = DefaultListen
 	}
+	if f.Mode == "" {
+		f.Mode = ModeStateless
+	}
 	if f.AuditLog == "" {
 		f.AuditLog = DefaultAuditLog
 	}
@@ -112,6 +130,9 @@ func (f *File) applyDefaults() {
 }
 
 func (f *File) validate() error {
+	if f.Mode != ModeStateless && f.Mode != ModeStateful {
+		return fmt.Errorf("mode must be %q or %q", ModeStateless, ModeStateful)
+	}
 	for name, b := range f.Backends {
 		if name == "toolhost" {
 			return fmt.Errorf("backend name %q is reserved for the gateway's own tools", name)

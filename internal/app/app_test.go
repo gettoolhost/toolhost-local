@@ -99,7 +99,7 @@ func TestGovernedCallEndToEnd(t *testing.T) {
 		t.Fatalf("resolve: want exactly up__echo, got %+v", res.Tools)
 	}
 
-	fd, err := frontdoor.New(res, cfg.Token, sink, nil)
+	fd, err := frontdoor.New(res, cfg.Token, sink, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,6 +366,102 @@ func TestMetaToolsEndToEnd(t *testing.T) {
 	res = call("toolhost__call", map[string]any{"name": "up__secret", "arguments": map[string]any{}})
 	if !res.IsError {
 		t.Fatal("disabled tool still callable via toolhost__call")
+	}
+}
+
+// Stateless mode (SEP-2567) is the default: the front door serves without
+// session IDs — each request is independent. Init, list, and call still
+// work end to end, including the boundary case that broke before: a
+// new-protocol client against a legacy-protocol upstream (transport values
+// must not leak across the gateway). No mode field set — this exercises
+// the default, not an explicit opt-in.
+func TestStatelessEndToEnd(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	up := fixtureUpstream(t)
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "toolhost.json")
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := l.Addr().String()
+	_ = l.Close()
+
+	cfg := &config.File{
+		Token:    "test-token",
+		Listen:   addr,
+		AuditLog: filepath.Join(dir, "audit.jsonl"),
+		Backends: map[string]*config.Backend{
+			"up": {Transport: "http", URL: up.URL},
+		},
+		Approved: []string{"up__echo"},
+	}
+	if err := cfg.Save(cfgPath); err != nil {
+		t.Fatal(err)
+	}
+
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- app.Serve(ctx, cfgPath, io.Discard) }()
+	defer func() {
+		cancel()
+		if err := <-serveDone; err != nil {
+			t.Fatalf("serve: %v", err)
+		}
+	}()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := http.Get("http://" + addr + "/healthz"); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("serve never came up")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Sessionless on the wire: no Mcp-Session-Id is issued.
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+addr+"/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","clientInfo":{"name":"t","version":"0"},"capabilities":{}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer test-token")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("initialize: want 200, got %d", resp.StatusCode)
+	}
+	if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
+		t.Fatalf("stateless server issued a session id: %q", sid)
+	}
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0"}, nil)
+	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
+		Endpoint:   "http://" + addr + "/mcp",
+		HTTPClient: &http.Client{Transport: authTransport{token: "test-token"}},
+	}, nil)
+	if err != nil {
+		t.Fatalf("stateless connect: %v", err)
+	}
+	defer session.Close()
+
+	called, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "up__echo",
+		Arguments: map[string]any{"message": "hi"},
+	})
+	if err != nil {
+		t.Fatalf("stateless call: %v", err)
+	}
+	if text := called.Content[0].(*mcp.TextContent).Text; text != "echo:hi" {
+		t.Fatalf("want echo:hi, got %q", text)
 	}
 }
 

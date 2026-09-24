@@ -68,3 +68,42 @@ func TestEnabledTier(t *testing.T) {
 		t.Fatal("empty allowlist should disable everything")
 	}
 }
+
+func TestMode(t *testing.T) {
+	// Absent defaults to stateless — the primary serving mode.
+	f := &File{}
+	f.applyDefaults()
+	if f.Mode != ModeStateless {
+		t.Fatalf("default mode: want %q, got %q", ModeStateless, f.Mode)
+	}
+	if err := f.validate(); err != nil {
+		t.Fatalf("default mode should validate: %v", err)
+	}
+
+	for _, m := range []string{ModeStateless, ModeStateful} {
+		f := &File{Mode: m}
+		if err := f.validate(); err != nil {
+			t.Fatalf("mode %q should validate: %v", m, err)
+		}
+	}
+	for _, m := range []string{"", "sessions", "Stateless"} {
+		f := &File{Mode: m}
+		if err := f.validate(); err == nil {
+			t.Fatalf("mode %q should fail validation", m)
+		}
+	}
+
+	// Round-trip: an explicit stateful survives save/load.
+	path := filepath.Join(t.TempDir(), "toolhost.json")
+	f = &File{Token: "t", Mode: ModeStateful}
+	if err := f.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Mode != ModeStateful {
+		t.Fatalf("mode lost on round-trip: got %q", loaded.Mode)
+	}
+}

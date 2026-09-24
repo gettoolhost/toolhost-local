@@ -20,6 +20,14 @@ discovered → approved (HUMAN policy) → enabled (live surface)
 A tool not on the live surface is invisible AND uncallable — by design,
 not by accident.
 
+The gateway is **stateless-first** (`"mode": "stateless"`, the default —
+SEP-2567, 2026-07-28 spec): no `Mcp-Session-Id`, every request
+independent. Legacy-protocol clients are served sessionlessly too. What
+they can't receive is *pushed* `tools/list_changed` — irrelevant to you:
+`toolhost__list`/`search`/`call` are pull-based and always current. Only
+if a client *must* hold a session for push does `"mode": "stateful"`
+exist — it's a config edit + restart, ask the human.
+
 ## If `toolhost__*` tools are in your surface
 
 You are attached to a gateway. Self-serve — do not ask the human to edit

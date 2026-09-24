@@ -80,12 +80,37 @@ already-qualified tool names pass through unchanged
 Point any MCP client at `http://127.0.0.1:8080/mcp` with the bearer token.
 Tools are namespaced `backend__tool`.
 
+## Transport modes — stateless first
+
+```json
+{ "mode": "stateless" }   // default — you usually don't write this
+{ "mode": "stateful" }    // opt-in: session-bearing, for push-capable clients
+```
+
+**Stateless is the primary design** (SEP-2567 sessionless Streamable HTTP,
+speaking the 2026-07-28 protocol): no `Mcp-Session-Id`, every request
+independent — initialize, `tools/list`, `tools/call` each stand alone.
+Clients speaking the new spec negotiate via `server/discover`; older
+protocol versions are served sessionlessly too — they get the same surface,
+just no held session.
+
+The one thing stateless can't do is *push*: `tools/list_changed` needs a
+held session. Agents don't miss it — `toolhost__list`/`search`/`call` are
+the pull-based path that works regardless of client refresh behavior.
+
+`"mode": "stateful"` is the compat opt-in for clients that must hold
+`Mcp-Session-Id` to receive pushed list-changes. Same governance, same
+auth, same surface — it only adds session state.
+
+Either way: bearer auth gates `/mcp` before MCP handling, and the SDK's
+DNS-rebinding protection stays on. Changing `mode` needs a restart.
+
 `serve` watches the config file (~1.5s poll): edit `approved`, `enabled`,
 or `backends` — via CLI or by hand — and the live surface swaps in place.
-Clients get `tools/list_changed`; unchanged backend sessions are kept,
-changed/removed ones re-dialed or closed. `listen`, `token`, and
-`audit_log` still need a restart. An invalid save keeps the current
-surface (audited `reload` with the error).
+Stateful clients get `tools/list_changed`; unchanged backend sessions are
+kept, changed/removed ones re-dialed or closed. `listen`, `token`,
+`audit_log`, and `mode` still need a restart. An invalid save keeps the
+current surface (audited `reload` with the error).
 
 ## The agent-facing control plane
 
