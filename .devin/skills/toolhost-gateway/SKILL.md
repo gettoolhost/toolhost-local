@@ -135,3 +135,12 @@ header:    Authorization: Bearer <token from toolhost.json>
   refused calls audited `tool_forbidden`.
 - The gateway's own `toolhost__*` tools can't be disabled or removed —
   the control plane always survives.
+
+## Feedback — leave a trail
+
+Hit a bug, a confusing error, a workaround you invented, or a gap in
+this skill? Don't patch the skill — drop one file in `feedback/`
+(beside this SKILL.md): `YYYY-MM-DD-<slug>.md`. What happened, what you
+expected, what would have helped. Three lines beats an essay. The
+maintainer harvests these manually — the more the product is used, the
+better it gets.
