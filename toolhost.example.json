@@ -1,0 +1,21 @@
+{
+  "listen": "127.0.0.1:8080",
+  "token": "th_REPLACE_WITH_OUTPUT_OF_toolhost_init",
+  "audit_log": "toolhost-audit.jsonl",
+  "backends": {
+    "fs": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    },
+    "remote": {
+      "transport": "http",
+      "url": "https://mcp.example.com/mcp",
+      "headers": { "Authorization": "Bearer ..." }
+    }
+  },
+  "approved": [
+    "fs__read_file",
+    "fs__list_directory"
+  ]
+}

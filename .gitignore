@@ -1,0 +1,13 @@
+# The previous-generation codebase lives here as an embedded git repo —
+# implementation reference only, never part of this build.
+/reference/
+
+# Local runtime state: config carries a bearer token, audit log carries calls.
+/toolhost.json
+/*-audit.jsonl
+/audit.jsonl
+
+# Binaries and OS noise.
+/toolhost
+/toolhost.exe
+.DS_Store
