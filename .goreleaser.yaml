@@ -1,0 +1,42 @@
+# toolhost-local release pipeline — tag v* and run `goreleaser release`.
+# Produces GitHub release archives + checksums + a Homebrew tap formula.
+version: 2
+
+project_name: toolhost
+
+builds:
+  - id: toolhost
+    main: ./cmd/toolhost
+    binary: toolhost
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X github.com/gettoolhost/toolhost-local/internal/core.Version={{.Version}}
+    env: [CGO_ENABLED=0]
+
+archives:
+  - formats: [tar.gz]
+    name_template: "toolhost_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files: [LICENSE, README.md]
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  use: github-native
+
+# Homebrew: `brew install gettoolhost/tap/toolhost` — needs a
+# gettoolhost/homebrew-tap repo before the first release.
+brews:
+  - name: toolhost
+    repository:
+      owner: gettoolhost
+      name: homebrew-tap
+    directory: Formula
+    homepage: https://github.com/gettoolhost/toolhost-local
+    description: "One governed front door between your agent and your MCP servers"
+    test: |
+      system "#{bin}/toolhost", "version"

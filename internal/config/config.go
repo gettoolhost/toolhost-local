@@ -8,9 +8,10 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
-	"toolhost/internal/namespace"
+	"github.com/gettoolhost/toolhost-local/internal/namespace"
 )
 
 // Backend describes one upstream MCP server.
@@ -160,9 +161,70 @@ func (f *File) applyDefaults() {
 	}
 }
 
+// ResolveEnv expands an "env:NAME" reference; anything else passes through
+// unchanged. Unset or empty fails closed — a config pointing at a missing
+// variable is broken, not merely incomplete.
+//
+// Credential fields stay as references inside File — Save round-trips the
+// reference, never the resolved secret, so toolhost.json can carry
+// pointers and be committed safely. Resolution happens at the boundary:
+// ResolvedToken for the gateway token, Backend.Resolved for upstream creds.
+func ResolveEnv(s string) (string, error) {
+	if !strings.HasPrefix(s, "env:") {
+		return s, nil
+	}
+	name := strings.TrimPrefix(s, "env:")
+	if v := os.Getenv(name); v != "" {
+		return v, nil
+	}
+	return "", fmt.Errorf("env var %s is unset or empty", name)
+}
+
+// ResolvedToken resolves the gateway bearer token.
+func (f *File) ResolvedToken() (string, error) {
+	return ResolveEnv(f.Token)
+}
+
+// Resolved returns a copy of the backend with every "env:" reference in
+// headers and auth fields resolved. The receiver is unchanged — the file's
+// in-memory shape keeps references, never secrets.
+func (b *Backend) Resolved() (*Backend, error) {
+	c := *b
+	if b.Headers != nil {
+		c.Headers = make(map[string]string, len(b.Headers))
+		for k, v := range b.Headers {
+			r, err := ResolveEnv(v)
+			if err != nil {
+				return nil, fmt.Errorf("header %s: %w", k, err)
+			}
+			c.Headers[k] = r
+		}
+	}
+	if b.Auth != nil {
+		a := *b.Auth
+		var err error
+		if a.Token, err = ResolveEnv(a.Token); err != nil {
+			return nil, fmt.Errorf("auth.token: %w", err)
+		}
+		if a.ClientID, err = ResolveEnv(a.ClientID); err != nil {
+			return nil, fmt.Errorf("auth.client_id: %w", err)
+		}
+		if a.ClientSecret, err = ResolveEnv(a.ClientSecret); err != nil {
+			return nil, fmt.Errorf("auth.client_secret: %w", err)
+		}
+		c.Auth = &a
+	}
+	return &c, nil
+}
+
 func (f *File) validate() error {
 	if f.Mode != ModeStateless && f.Mode != ModeStateful {
 		return fmt.Errorf("mode must be %q or %q", ModeStateless, ModeStateful)
+	}
+	// env: references must resolve — a missing var fails closed at load,
+	// not at first call.
+	if _, err := f.ResolvedToken(); err != nil {
+		return fmt.Errorf("token: %w", err)
 	}
 	if f.CallTimeout != "" {
 		if _, err := parseTimeout(f.CallTimeout); err != nil {
@@ -178,6 +240,9 @@ func (f *File) validate() error {
 		}
 		if b == nil {
 			return fmt.Errorf("backend %q: empty block", name)
+		}
+		if _, err := b.Resolved(); err != nil {
+			return fmt.Errorf("backend %q: %w", name, err)
 		}
 		switch b.Transport {
 		case "stdio":

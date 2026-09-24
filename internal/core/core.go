@@ -15,7 +15,8 @@ import (
 )
 
 // Version is the single source for what the binary reports to MCP clients.
-const Version = "0.1.0"
+// Release builds stamp it: -ldflags "-X .../internal/core.Version=vX.Y.Z".
+var Version = "0.1.0"
 
 // Upstream is one connected backend MCP server — the driven port every
 // backend adapter implements.

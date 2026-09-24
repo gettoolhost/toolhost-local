@@ -1,4 +1,4 @@
-module toolhost
+module github.com/gettoolhost/toolhost-local
 
 go 1.26.2
 

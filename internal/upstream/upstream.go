@@ -23,9 +23,9 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"golang.org/x/oauth2"
 
-	"toolhost/internal/config"
-	"toolhost/internal/core"
-	"toolhost/internal/oauth"
+	"github.com/gettoolhost/toolhost-local/internal/config"
+	"github.com/gettoolhost/toolhost-local/internal/core"
+	"github.com/gettoolhost/toolhost-local/internal/oauth"
 )
 
 // maxDiscoveryItems bounds a single backend's tool list so a malfunctioning
@@ -67,10 +67,17 @@ type Backend struct {
 func (b *Backend) Passthrough() bool { return b.passthrough }
 
 // Connect dials (or spawns) the backend and discovers its tool inventory.
+// cfg's env: references resolve here — the copy that reaches transports
+// carries secrets; the config file never does.
 func Connect(ctx context.Context, name string, cfg *config.Backend, opts *Options) (*Backend, error) {
 	if opts == nil {
 		opts = &Options{}
 	}
+	rcfg, err := cfg.Resolved()
+	if err != nil {
+		return nil, fmt.Errorf("backend %q: %w", name, err)
+	}
+	cfg = rcfg
 	transport, err := transportFor(ctx, name, cfg, opts)
 	if err != nil {
 		return nil, fmt.Errorf("backend %q: %w", name, err)

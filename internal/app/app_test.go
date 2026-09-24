@@ -21,12 +21,12 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"toolhost/internal/app"
-	"toolhost/internal/audit"
-	"toolhost/internal/config"
-	"toolhost/internal/core"
-	"toolhost/internal/frontdoor"
-	"toolhost/internal/upstream"
+	"github.com/gettoolhost/toolhost-local/internal/app"
+	"github.com/gettoolhost/toolhost-local/internal/audit"
+	"github.com/gettoolhost/toolhost-local/internal/config"
+	"github.com/gettoolhost/toolhost-local/internal/core"
+	"github.com/gettoolhost/toolhost-local/internal/frontdoor"
+	"github.com/gettoolhost/toolhost-local/internal/upstream"
 )
 
 type authTransport struct{ token string }

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -149,6 +150,60 @@ func TestCallTimeoutValidation(t *testing.T) {
 	}
 	if loaded.CallTimeout != DefaultCallTimeout {
 		t.Fatalf("default call_timeout: want %q, got %q", DefaultCallTimeout, loaded.CallTimeout)
+	}
+}
+
+func TestEnvRefs(t *testing.T) {
+	t.Setenv("TH_TEST_TOKEN", "resolved-secret")
+	t.Setenv("TH_TEST_KEY", "up-key")
+
+	f := &File{Mode: ModeStateless, Token: "env:TH_TEST_TOKEN", Backends: map[string]*Backend{
+		"b": {Transport: "http", URL: "http://x",
+			Headers: map[string]string{"X-Key": "env:TH_TEST_KEY"},
+			Auth:    &Auth{Type: "bearer", Token: "env:TH_TEST_TOKEN"}},
+	}}
+	if err := f.validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Resolution happens at the boundary — File itself keeps references.
+	tok, err := f.ResolvedToken()
+	if err != nil || tok != "resolved-secret" {
+		t.Fatalf("ResolvedToken: %q %v", tok, err)
+	}
+	rb, err := f.Backends["b"].Resolved()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rb.Headers["X-Key"] != "up-key" || rb.Auth.Token != "resolved-secret" {
+		t.Fatalf("Resolved: %+v", rb)
+	}
+	// The original must be untouched — the reference, not the secret.
+	if f.Backends["b"].Auth.Token != "env:TH_TEST_TOKEN" {
+		t.Fatalf("Resolved mutated the receiver: %q", f.Backends["b"].Auth.Token)
+	}
+
+	// Unset env → fail closed at load.
+	bad := &File{Mode: ModeStateless, Token: "env:TH_TEST_MISSING"}
+	if err := bad.validate(); err == nil {
+		t.Fatal("unset env var should fail validation")
+	}
+
+	// Save round-trips the reference — a resolved secret can never land
+	// on disk via governance writes.
+	path := filepath.Join(t.TempDir(), "toolhost.json")
+	if err := f.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "resolved-secret") || strings.Contains(string(raw), "up-key") {
+		t.Fatalf("Save persisted a resolved secret:\n%s", raw)
+	}
+	if !strings.Contains(string(raw), "env:TH_TEST_TOKEN") {
+		t.Fatalf("Save lost the env: reference:\n%s", raw)
 	}
 }
 

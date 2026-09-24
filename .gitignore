@@ -1,7 +1,3 @@
-# The previous-generation codebase lives here as an embedded git repo —
-# implementation reference only, never part of this build.
-/reference/
-
 # Local runtime state: config carries a bearer token, audit log carries
 # calls, the token store carries upstream OAuth grants — all credentials.
 /toolhost.json

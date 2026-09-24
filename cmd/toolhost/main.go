@@ -18,8 +18,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"toolhost/internal/app"
-	"toolhost/internal/core"
+	"github.com/gettoolhost/toolhost-local/internal/app"
+	"github.com/gettoolhost/toolhost-local/internal/core"
 )
 
 func main() {

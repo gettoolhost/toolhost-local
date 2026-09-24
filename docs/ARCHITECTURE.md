@@ -108,11 +108,16 @@ subprocesses; adapters own those. One dependency direction: adapters → core.
   constant-time compared — deliberately boring. Upstream: per-backend
   `auth` block (none/bearer/client_credentials/oauth); grants persist to
   `toolhost_tokens.json` beside the config, never inside it.
+- **Secrets resolve at use, never at load.** Credential fields accept
+  `env:NAME` (gateway token, backend headers, `auth.token`,
+  `auth.client_id`, `auth.client_secret`). `Load` validates presence
+  fail-closed but keeps the literal reference; `ResolvedToken`/
+  `Backend.Resolved` expand copies at the boundary — so `Save` cannot
+  write a resolved secret back to disk by construction.
 
 ## Deliberately absent
 
 An OAuth authorization server of our own, per-principal upstream
 credentials, tenancy, policy beyond the approve-list, rate limiting, schema
-pinning, config generations, console, portal, Postgres. The
-`reference/` tree has production-grade versions of all of it — port when a
+pinning, config generations, console, portal, Postgres. Add them when a
 real need appears, not before.

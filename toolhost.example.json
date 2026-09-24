@@ -18,7 +18,7 @@
     "keyed": {
       "transport": "http",
       "url": "https://mcp.example.com/mcp",
-      "auth": { "type": "bearer", "token": "sk-upstream-key" }
+      "auth": { "type": "bearer", "token": "env:UPSTREAM_API_KEY" }
     },
     "machine": {
       "transport": "http",

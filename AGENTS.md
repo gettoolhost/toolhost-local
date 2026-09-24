@@ -1,7 +1,8 @@
 # AGENTS.md
 
 Toolhost OSS kernel — one governed MCP front door. Pure Go module
-(`module toolhost`, go 1.26.2), no database, no JS, no monorepo.
+(`github.com/gettoolhost/toolhost-local`, go 1.26.2), no database, no JS,
+no monorepo.
 
 ## Build, test, run
 
@@ -20,14 +21,6 @@ visibility/callability is decided; keep it that way (invisible = uncallable
 is a structural property, not a check). Namespacing is `backend__tool` —
 the grammar and its constraints live in `internal/namespace`; do not change
 the separator without understanding why `::` was rejected.
-
-## The reference tree
-
-`reference/` is the mature enterprise codebase this grew from — an embedded
-git repo (own history at `8e000fb1`), gitignored here, read-only. Mine it
-for proven patterns (auth, SSRF discipline, evidence envelope) when a real
-need appears; do not port speculatively. Its docs (`project_docs/`,
-`DECISIONS.md`) describe THAT product — they are context, not authority here.
 
 ## Invariants worth keeping
 

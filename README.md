@@ -13,7 +13,8 @@ makes it safe.
 ## Install
 
 ```bash
-go build -o toolhost ./cmd/toolhost
+go install github.com/gettoolhost/toolhost-local/cmd/toolhost@latest
+# or from source: go build -o toolhost ./cmd/toolhost
 ```
 
 ## Quickstart
@@ -56,6 +57,11 @@ Config — three transports × four upstream auth modes:
 | `stdio` | ✓ | via `env` | — | — |
 | `http` | ✓ | ✓ | ✓ | ✓ |
 | `sse` | ✓ | ✓ | ✓ | ✓ via stored grant |
+
+Credential fields take `env:` references so `toolhost.json` is committable —
+`"token": "env:TOOLHOST_TOKEN"`, a header value, `auth.token`,
+`auth.client_id`, `auth.client_secret`. They resolve at use, never persist
+resolved values, and a missing/empty var fails closed at load.
 
 `stdio` backends take credentials through `env`. `bearer` is the API-key
 shape — also expressible as a raw `headers` entry. `client_credentials`
@@ -160,8 +166,7 @@ writes `requested` entries (name + reason, deduped) — visible in
 
 No tenancy, no console, no database, no upstream credential brokerage
 beyond the auth block above. A single key, a single endpoint, a governed
-call. The mature enterprise tree this grew from lives in `reference/` —
-read-only, its own git history intact.
+call.
 
 ## Layout
 

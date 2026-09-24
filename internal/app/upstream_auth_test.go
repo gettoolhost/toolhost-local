@@ -20,9 +20,9 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"toolhost/internal/config"
-	"toolhost/internal/oauth"
-	"toolhost/internal/upstream"
+	"github.com/gettoolhost/toolhost-local/internal/config"
+	"github.com/gettoolhost/toolhost-local/internal/oauth"
+	"github.com/gettoolhost/toolhost-local/internal/upstream"
 )
 
 // mcpFixture is the smallest honest upstream: one echo tool.

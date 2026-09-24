@@ -21,7 +21,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"golang.org/x/oauth2"
 
-	"toolhost/internal/config"
+	"github.com/gettoolhost/toolhost-local/internal/config"
 )
 
 // DefaultRedirectURL is the loopback callback the authorization flow listens

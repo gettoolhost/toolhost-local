@@ -8,7 +8,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"toolhost/internal/namespace"
+	"github.com/gettoolhost/toolhost-local/internal/namespace"
 )
 
 // ResolvedTool is one upstream tool that is BOTH visible and callable under

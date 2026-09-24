@@ -22,12 +22,12 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"toolhost/internal/audit"
-	"toolhost/internal/config"
-	"toolhost/internal/core"
-	"toolhost/internal/frontdoor"
-	"toolhost/internal/oauth"
-	"toolhost/internal/upstream"
+	"github.com/gettoolhost/toolhost-local/internal/audit"
+	"github.com/gettoolhost/toolhost-local/internal/config"
+	"github.com/gettoolhost/toolhost-local/internal/core"
+	"github.com/gettoolhost/toolhost-local/internal/frontdoor"
+	"github.com/gettoolhost/toolhost-local/internal/oauth"
+	"github.com/gettoolhost/toolhost-local/internal/upstream"
 )
 
 // connectTimeout bounds each backend's connect+discover handshake.
@@ -235,7 +235,11 @@ func Auth(ctx context.Context, path, name string, w io.Writer) error {
 	if err != nil {
 		return err
 	}
-	h, err := oauth.NewHandler(ctx, name, b.Auth, store, true, nil, w)
+	rb, err := b.Resolved()
+	if err != nil {
+		return err
+	}
+	h, err := oauth.NewHandler(ctx, name, rb.Auth, store, true, nil, w)
 	if err != nil {
 		return err
 	}
@@ -291,11 +295,15 @@ func Status(ctx context.Context, path string, w io.Writer) error {
 		return err
 	}
 
+	token, err := f.ResolvedToken()
+	if err != nil {
+		return err
+	}
 	client := mcp.NewClient(&mcp.Implementation{Name: "toolhost-cli", Version: core.Version}, nil)
 	connCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	session, err := client.Connect(connCtx, &mcp.StreamableClientTransport{
 		Endpoint:   "http://" + f.Listen + "/mcp",
-		HTTPClient: &http.Client{Transport: bearerTransport{f.Token}},
+		HTTPClient: &http.Client{Transport: bearerTransport{token}},
 	}, nil)
 	cancel()
 	if err != nil {
@@ -397,7 +405,11 @@ func Serve(ctx context.Context, path string, w io.Writer, stdio bool) error {
 	if err != nil {
 		return err
 	}
-	if !stdio && f.Token == "" {
+	token, err := f.ResolvedToken()
+	if err != nil {
+		return err
+	}
+	if !stdio && token == "" {
 		return fmt.Errorf("config %s has no token — run toolhost init or set \"token\"", path)
 	}
 
@@ -453,7 +465,7 @@ func Serve(ctx context.Context, path string, w io.Writer, stdio bool) error {
 		return srv.ServeStdio(ctx)
 	}
 
-	srv, err := frontdoor.New(res, f.Token, sink, live.meta(),
+	srv, err := frontdoor.New(res, token, sink, live.meta(),
 		&frontdoor.Options{Stateless: f.Mode != config.ModeStateful})
 	if err != nil {
 		return err

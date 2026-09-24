@@ -15,7 +15,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"toolhost/internal/core"
+	"github.com/gettoolhost/toolhost-local/internal/core"
 )
 
 // Server is the governed /mcp endpoint plus an unauthenticated /healthz.

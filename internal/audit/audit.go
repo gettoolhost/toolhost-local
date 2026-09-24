@@ -10,7 +10,7 @@ import (
 	"os"
 	"sync"
 
-	"toolhost/internal/core"
+	"github.com/gettoolhost/toolhost-local/internal/core"
 )
 
 // Sink appends core.Events as JSONL.
