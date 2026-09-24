@@ -91,8 +91,10 @@ func Discover(ctx context.Context, path string, w io.Writer) error {
 		for _, t := range up.Tools() {
 			qualified := up.Namespace() + "__" + t.Name
 			status := " "
-			if f.IsApproved(qualified) {
+			if f.IsEnabled(qualified) {
 				status = "✓"
+			} else if f.IsApproved(qualified) {
+				status = "○" // approved but disabled — policy kept, surface off
 			}
 			desc := t.Description
 			if len(desc) > 60 {
@@ -101,7 +103,8 @@ func Discover(ctx context.Context, path string, w io.Writer) error {
 			fmt.Fprintf(w, "%-2s %-40s %s\n", status, qualified, desc)
 		}
 	}
-	fmt.Fprintln(w, "\n✓ = approved. Approve with: toolhost approve <qualified-name>")
+	fmt.Fprintln(w, "\n✓ = enabled · ○ = approved but disabled · blank = discovered only")
+	fmt.Fprintln(w, "toolhost approve/enable/disable <qualified-name>")
 	return nil
 }
 
@@ -135,6 +138,66 @@ func EditApprovals(path string, names []string, approve bool, w io.Writer) error
 	}
 	for _, n := range changed {
 		fmt.Fprintf(w, "%s %s\n", verb, n)
+	}
+	fmt.Fprintln(w, "takes effect on next serve")
+	return nil
+}
+
+// EditEnabled adjusts the live surface. enable adds names to the allowlist
+// (no-op until a list exists — without one, all approved tools are already
+// enabled); disable hides approved tools, materializing the allowlist as
+// approved ∖ names on first use. only=true replaces the list; names=nil
+// with enable resets to "all approved" (the --all form).
+func EditEnabled(path string, names []string, enable, only bool, w io.Writer) error {
+	f, err := config.Load(path)
+	if err != nil {
+		return err
+	}
+	var changed []string
+	var verb string
+	switch {
+	case enable && len(names) == 0 && !only:
+		if f.Enabled == nil {
+			fmt.Fprintln(w, "all approved tools already enabled")
+			return nil
+		}
+		f.EnableAll()
+		verb = "enabled every approved tool (allowlist cleared)"
+	case enable && only:
+		if len(names) == 0 {
+			return errors.New("enable --only needs at least one qualified tool")
+		}
+		changed, err = f.EnableOnly(names...)
+		verb = "enabled (only these)"
+	case enable:
+		if f.Enabled == nil {
+			fmt.Fprintln(w, "already enabled — no allowlist is set, so every approved tool is on")
+			return nil
+		}
+		changed, err = f.Enable(names...)
+		verb = "enabled"
+	default:
+		if len(names) == 0 {
+			return errors.New("name at least one qualified tool, e.g. toolhost disable neon__list_operations")
+		}
+		changed, err = f.Disable(names...)
+		verb = "disabled"
+	}
+	if err != nil {
+		return err
+	}
+	if len(changed) == 0 && len(names) > 0 {
+		fmt.Fprintln(w, "no change")
+		return nil
+	}
+	if err := f.Save(path); err != nil {
+		return err
+	}
+	for _, n := range changed {
+		fmt.Fprintf(w, "%s %s\n", verb, n)
+	}
+	if len(changed) == 0 {
+		fmt.Fprintln(w, verb)
 	}
 	fmt.Fprintln(w, "takes effect on next serve")
 	return nil
@@ -174,6 +237,31 @@ func Auth(ctx context.Context, path, name string, w io.Writer) error {
 	return nil
 }
 
+// Logout drops a backend's stored upstream grant — the counterpart of
+// `toolhost auth`. Serve then fails closed on that backend until the next
+// `toolhost auth <backend>`.
+func Logout(path, name string, w io.Writer) error {
+	f, err := config.Load(path)
+	if err != nil {
+		return err
+	}
+	if _, ok := f.Backends[name]; !ok {
+		return fmt.Errorf("no backend %q in %s", name, path)
+	}
+	store, err := oauth.OpenStore(oauth.StorePath(path))
+	if err != nil {
+		return err
+	}
+	if store.Get(name) == nil {
+		return fmt.Errorf("no stored grant for backend %q — nothing to log out", name)
+	}
+	if err := store.Delete(name); err != nil {
+		return err
+	}
+	fmt.Fprintf(w, "logged out %s — grant removed from %s\n", name, store.Path())
+	return nil
+}
+
 // Serve connects all configured backends, resolves the approved set, and
 // serves /mcp until ctx is canceled.
 func Serve(ctx context.Context, path string, w io.Writer) error {
@@ -201,7 +289,8 @@ func Serve(ctx context.Context, path string, w io.Writer) error {
 		fmt.Fprintf(w, "backend %s unreachable: %s\n", name, e)
 	}
 
-	res, err := core.Resolve(ups, f.ApprovedSet())
+	enabledSet, _ := f.EnabledSet()
+	res, err := core.Resolve(ups, f.ApprovedSet(), enabledSet)
 	if err != nil {
 		return err
 	}

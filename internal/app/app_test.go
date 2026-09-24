@@ -89,7 +89,7 @@ func TestGovernedCallEndToEnd(t *testing.T) {
 	}
 	defer func() { _ = ups[0].Close() }()
 
-	res, err := core.Resolve(ups, cfg.ApprovedSet())
+	res, err := core.Resolve(ups, cfg.ApprovedSet(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +188,7 @@ func TestResolveSkipsUnwireableAndUnapproved(t *testing.T) {
 			{Name: "ok"}, {Name: "New Tool"}, {Name: "hidden"},
 		}},
 	}
-	res, err := core.Resolve(ups, map[string]bool{"a__ok": true, "a__New Tool": true})
+	res, err := core.Resolve(ups, map[string]bool{"a__ok": true, "a__New Tool": true}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,6 +197,33 @@ func TestResolveSkipsUnwireableAndUnapproved(t *testing.T) {
 	}
 	if len(res.Skipped) != 1 || res.Skipped[0].Tool != "New Tool" {
 		t.Fatalf("want New Tool skipped with reason, got %+v", res.Skipped)
+	}
+}
+
+// The third tier: approved ∩ enabled. A disabled tool is as absent from
+// the surface as an unapproved one — invisible AND uncallable.
+func TestResolveEnabledSubset(t *testing.T) {
+	ups := []core.Upstream{
+		&stubUpstream{ns: "a", tools: []*mcp.Tool{{Name: "x"}, {Name: "y"}, {Name: "z"}}},
+	}
+	approved := map[string]bool{"a__x": true, "a__y": true, "a__z": true}
+
+	res, err := core.Resolve(ups, approved, map[string]bool{"a__x": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Tools) != 1 || res.Tools[0].Qualified != "a__x" {
+		t.Fatalf("enabled={x}: want exactly a__x, got %+v", res.Tools)
+	}
+
+	// An enabled-but-unapproved name contributes nothing — enable is never
+	// a backdoor around approval.
+	res, err = core.Resolve(ups, map[string]bool{"a__x": true}, map[string]bool{"a__x": true, "a__y": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Tools) != 1 || res.Tools[0].Qualified != "a__x" {
+		t.Fatalf("enabled={x,y} approved={x}: want exactly a__x, got %+v", res.Tools)
 	}
 }
 

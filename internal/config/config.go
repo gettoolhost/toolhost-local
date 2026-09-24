@@ -62,6 +62,11 @@ type File struct {
 	// intersects with discovery. discovered ≠ approved: everything not on
 	// this list is invisible and uncallable.
 	Approved []string `json:"approved"`
+	// Enabled is the live-surface allowlist, third tier of the invariant:
+	// nil (absent) means every approved tool is enabled; a non-nil list
+	// means only enabled∩approved is visible. Pointer so "absent" and
+	// "explicitly empty" stay distinct — [] must not collapse into all.
+	Enabled *[]string `json:"enabled,omitempty"`
 }
 
 const (
@@ -129,6 +134,13 @@ func (f *File) validate() error {
 			return fmt.Errorf("approved name %q: %w", q, err)
 		}
 	}
+	if f.Enabled != nil {
+		for _, q := range *f.Enabled {
+			if _, _, err := namespace.Split(q); err != nil {
+				return fmt.Errorf("enabled name %q: %w", q, err)
+			}
+		}
+	}
 	return nil
 }
 
@@ -178,6 +190,125 @@ func (f *File) ApprovedSet() map[string]bool {
 
 func (f *File) IsApproved(qualified string) bool {
 	return f.ApprovedSet()[qualified]
+}
+
+// EnabledSet returns the allowlist and whether one is configured —
+// (nil, false) means "all approved tools are enabled".
+func (f *File) EnabledSet() (map[string]bool, bool) {
+	if f.Enabled == nil {
+		return nil, false
+	}
+	set := make(map[string]bool, len(*f.Enabled))
+	for _, q := range *f.Enabled {
+		set[q] = true
+	}
+	return set, true
+}
+
+// IsEnabled reports whether a qualified tool is on the live surface:
+// enabled (no list, or listed) AND approved.
+func (f *File) IsEnabled(qualified string) bool {
+	if !f.IsApproved(qualified) {
+		return false
+	}
+	set, has := f.EnabledSet()
+	return !has || set[qualified]
+}
+
+// Enable adds qualified names to the live surface. No-op (nil) while no
+// allowlist exists — without one, every approved tool is already enabled.
+// Enabled names must be approved first; enabling is never a backdoor
+// around approval.
+func (f *File) Enable(names ...string) ([]string, error) {
+	if f.Enabled == nil {
+		return nil, nil
+	}
+	approved := f.ApprovedSet()
+	set, _ := f.EnabledSet()
+	var added []string
+	for _, n := range names {
+		if _, _, err := namespace.Split(n); err != nil {
+			return nil, fmt.Errorf("%q is not a qualified name (want backend__tool): %w", n, err)
+		}
+		if !approved[n] {
+			return nil, fmt.Errorf("%q is not approved — run: toolhost approve %s", n, n)
+		}
+		if set[n] {
+			continue
+		}
+		set[n] = true
+		added = append(added, n)
+	}
+	if len(added) > 0 {
+		list := append(*f.Enabled, added...)
+		sort.Strings(list)
+		f.Enabled = &list
+	}
+	return added, nil
+}
+
+// EnableOnly replaces the live surface with exactly the given names —
+// the "I need just these tools" form. All must be approved.
+func (f *File) EnableOnly(names ...string) ([]string, error) {
+	approved := f.ApprovedSet()
+	for _, n := range names {
+		if _, _, err := namespace.Split(n); err != nil {
+			return nil, fmt.Errorf("%q is not a qualified name (want backend__tool): %w", n, err)
+		}
+		if !approved[n] {
+			return nil, fmt.Errorf("%q is not approved — run: toolhost approve %s", n, n)
+		}
+	}
+	list := append([]string{}, names...)
+	sort.Strings(list)
+	f.Enabled = &list
+	return names, nil
+}
+
+// EnableAll clears the allowlist — every approved tool is enabled again.
+func (f *File) EnableAll() {
+	f.Enabled = nil
+}
+
+// Disable hides approved tools without un-approving them. The first
+// disable materializes the allowlist as approved ∖ names — after that,
+// the live surface is always explicit.
+func (f *File) Disable(names ...string) ([]string, error) {
+	for _, n := range names {
+		if _, _, err := namespace.Split(n); err != nil {
+			return nil, fmt.Errorf("%q is not a qualified name (want backend__tool): %w", n, err)
+		}
+	}
+	if f.Enabled == nil {
+		set := f.ApprovedSet()
+		for _, n := range names {
+			delete(set, n)
+		}
+		list := make([]string, 0, len(set))
+		for q := range set {
+			list = append(list, q)
+		}
+		sort.Strings(list)
+		f.Enabled = &list
+		return names, nil
+	}
+	set, _ := f.EnabledSet()
+	var removed []string
+	for _, n := range names {
+		if set[n] {
+			delete(set, n)
+			removed = append(removed, n)
+		}
+	}
+	if len(removed) > 0 {
+		list := make([]string, 0, len(set))
+		for q := range set {
+			list = append(list, q)
+		}
+		sort.Strings(list)
+		f.Enabled = &list
+	}
+	return removed, nil
 }
 
 // Approve adds qualified names; returns those actually added.

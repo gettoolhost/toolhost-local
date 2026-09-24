@@ -58,6 +58,23 @@ func main() {
 		_ = fs.Parse(os.Args[2:])
 		err = app.EditApprovals(*cfg, fs.Args(), os.Args[1] == "approve", os.Stdout)
 
+	case "enable", "disable":
+		fs := flag.NewFlagSet(os.Args[1], flag.ExitOnError)
+		cfg := fs.String("c", "toolhost.json", "config path")
+		only := fs.Bool("only", false, "enable exactly these tools, hiding the rest")
+		_ = fs.Parse(os.Args[2:])
+		err = app.EditEnabled(*cfg, fs.Args(), os.Args[1] == "enable", *only, os.Stdout)
+
+	case "logout":
+		fs := flag.NewFlagSet("logout", flag.ExitOnError)
+		cfg := fs.String("c", "toolhost.json", "config path")
+		_ = fs.Parse(os.Args[2:])
+		if fs.NArg() != 1 {
+			fmt.Fprintln(os.Stderr, "usage: toolhost logout [-c config] <backend>")
+			os.Exit(2)
+		}
+		err = app.Logout(*cfg, fs.Arg(0), os.Stdout)
+
 	case "serve":
 		fs := flag.NewFlagSet("serve", flag.ExitOnError)
 		cfg := fs.String("c", "toolhost.json", "config path")
@@ -91,7 +108,11 @@ func usage() {
   toolhost discover   list every tool your backends expose (backend__tool)
   toolhost approve    approve qualified tool names, e.g. fs__read_file
   toolhost revoke     revoke qualified tool names
+  toolhost enable     put approved tools on the live surface (no args = all)
+                      --only <tools> = surface is exactly these
+  toolhost disable    hide approved tools without un-approving them
   toolhost auth       grant upstream OAuth for a backend (browser flow)
+  toolhost logout     drop a backend's stored upstream grant
   toolhost serve      serve /mcp — Authorization: Bearer <token>
   toolhost version
 

@@ -35,12 +35,14 @@ type Resolution struct {
 }
 
 // Resolve answers "what can be seen and called" — the ONLY place that
-// question is answered. A tool is exposed iff it is discovered AND approved:
-// discovered-but-unapproved is invisible and (structurally) uncallable.
+// question is answered. A tool is exposed iff it is discovered AND approved
+// AND enabled: discovered ≠ approved ≠ enabled. A nil enabled set means
+// "no allowlist configured" — every approved tool is enabled. A non-nil
+// enabled set intersects: the live surface is enabled ∩ approved.
 //
 // A duplicate qualified name is a hard error: two upstreams claiming one
 // wire name is a routing ambiguity, and ambiguity denies.
-func Resolve(upstreams []Upstream, approved map[string]bool) (*Resolution, error) {
+func Resolve(upstreams []Upstream, approved, enabled map[string]bool) (*Resolution, error) {
 	res := &Resolution{}
 	seen := map[string]string{}
 	for _, up := range upstreams {
@@ -58,6 +60,9 @@ func Resolve(upstreams []Upstream, approved map[string]bool) (*Resolution, error
 			}
 			seen[qualified] = up.Namespace()
 			if !approved[qualified] {
+				continue
+			}
+			if enabled != nil && !enabled[qualified] {
 				continue
 			}
 			namespaced := *tool
