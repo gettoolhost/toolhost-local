@@ -24,9 +24,16 @@ the separator without understanding why `::` was rejected.
 
 ## Invariants worth keeping
 
-- `discovered != approved != enabled` — approval is `approved` in
-  `toolhost.json`; everything else is invisible and uncallable.
-- Every governed action leaves an audit record (`internal/audit`, JSONL).
+- `discovered != approved != enabled` — `core.Resolve` exposes only
+  discovered, approved, enabled tools; absent `enabled` means all approved.
+- Gateway calls and agent governance actions leave JSONL audit records
+  (`internal/audit`).
 - Ambiguity denies: bad names skip, collisions are hard errors, dead
   backends contribute zero tools.
 - Fail closed; never default-open on a missing or malformed anything.
+
+## Local files
+
+- Keep private notes, drafts, generated source art, credentials, and runtime
+  logs in ignored `.local/` or the existing ignored runtime paths.
+- Tracked docs and assets are for users; review each before commit.

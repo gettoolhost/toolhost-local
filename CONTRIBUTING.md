@@ -22,6 +22,6 @@ go test ./... -count=1
 
 ## Agent users
 
-`.devin/skills/toolhost-gateway/` teaches agents to operate the product.
+`.devin/skills/toolhost-local-gateway/` teaches agents to operate the product.
 If you hit friction, drop a note in its `feedback/` folder — see the
 README there.

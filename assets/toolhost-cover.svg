@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-labelledby="title desc">
+  <title id="title">Toolhost — one front door, only approved tools</title>
+  <desc id="desc">An MCP gateway admits approved tool connections and records calls in an audit log.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1420"/>
+      <stop offset="1" stop-color="#142333"/>
+    </linearGradient>
+    <linearGradient id="gate" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffb085"/>
+      <stop offset=".55" stop-color="#f27d4b"/>
+      <stop offset="1" stop-color="#ad4e32"/>
+    </linearGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#8db1bb" stroke-opacity=".07"/>
+    </pattern>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="12"/>
+    </filter>
+  </defs>
+
+  <rect width="1280" height="640" fill="url(#background)"/>
+  <rect width="1280" height="640" fill="url(#grid)"/>
+  <path d="M0 558H1280" stroke="#9dc5c2" stroke-opacity=".18"/>
+
+  <g font-family="Arial, Helvetica, sans-serif">
+    <g transform="translate(70 62)" fill="none" stroke="#f27d4b" stroke-width="3" stroke-linecap="round">
+      <path d="M0 5H17L25 13H37"/>
+      <path d="M0 13H37"/>
+      <path d="M0 21H17L25 13"/>
+      <circle cx="40" cy="13" r="3" fill="#f27d4b" stroke="none"/>
+    </g>
+    <text x="125" y="84" fill="#f1eee7" font-size="21" font-weight="700" letter-spacing="4">TOOLHOST</text>
+    <text x="70" y="217" fill="#f1eee7" font-size="56" font-weight="700" letter-spacing="-2">One front door.</text>
+    <text x="70" y="282" fill="#f27d4b" font-size="54" font-weight="700" letter-spacing="-2">Only approved tools.</text>
+    <text x="72" y="338" fill="#b7c7ca" font-size="20">The local-first MCP gateway for AI agents.</text>
+    <text x="72" y="375" fill="#b7c7ca" font-size="20">Discover. Approve. Enable. Audit.</text>
+    <rect x="70" y="430" width="445" height="54" rx="8" fill="#172d39" stroke="#4e7580" stroke-opacity=".7"/>
+    <text x="92" y="465" fill="#d9e4df" font-size="17" font-weight="700" letter-spacing="1">DISCOVERED  ≠  APPROVED  ≠  ENABLED</text>
+    <text x="70" y="598" fill="#86a7aa" font-size="15" letter-spacing="1">ONE /mcp ENDPOINT  •  HUMAN APPROVAL  •  JSONL AUDIT</text>
+  </g>
+
+  <g fill="#1b3440" stroke="#537885" stroke-width="1.5">
+    <rect x="640" y="123" width="104" height="38" rx="7"/>
+    <rect x="640" y="193" width="104" height="38" rx="7"/>
+    <rect x="640" y="263" width="104" height="38" rx="7"/>
+    <rect x="640" y="333" width="104" height="38" rx="7"/>
+    <rect x="640" y="403" width="104" height="38" rx="7"/>
+  </g>
+  <g fill="#a9c5c4" font-family="Arial, Helvetica, sans-serif" font-size="13" text-anchor="middle" letter-spacing="1">
+    <text x="692" y="148">SERVER A</text>
+    <text x="692" y="218">SERVER B</text>
+    <text x="692" y="288">SERVER C</text>
+    <text x="692" y="358">SERVER D</text>
+    <text x="692" y="428">SERVER E</text>
+  </g>
+
+  <g fill="none" stroke-width="2.5" stroke-linecap="round">
+    <path d="M744 142C815 142 827 230 905 230" stroke="#86a7aa" stroke-opacity=".45"/>
+    <path d="M744 212C812 212 838 267 905 267" stroke="#e6dfd0"/>
+    <path d="M744 282H905" stroke="#e6dfd0"/>
+    <path d="M744 352C812 352 838 297 905 297" stroke="#e6dfd0"/>
+    <path d="M744 422C815 422 827 320 905 320" stroke="#86a7aa" stroke-opacity=".45"/>
+    <path d="M955 267H1115" stroke="#e6dfd0"/>
+    <path d="M955 282H1115" stroke="#e6dfd0"/>
+    <path d="M955 297H1115" stroke="#e6dfd0"/>
+    <path d="M955 297C1000 348 1032 438 1070 455" stroke="#85dccb" stroke-dasharray="3 9"/>
+  </g>
+  <circle cx="930" cy="282" r="45" fill="#f27d4b" opacity=".25" filter="url(#glow)"/>
+  <circle cx="930" cy="282" r="47" fill="#182a36" stroke="url(#gate)" stroke-width="16"/>
+  <circle cx="930" cy="282" r="28" fill="#10202d" stroke="#ffb085" stroke-opacity=".8"/>
+  <circle cx="1140" cy="282" r="24" fill="#1b3440" stroke="#85dccb" stroke-width="3"/>
+  <circle cx="1140" cy="282" r="8" fill="#85dccb"/>
+  <g font-family="Arial, Helvetica, sans-serif" text-anchor="middle">
+    <text x="1140" y="336" fill="#bdd5d2" font-size="15" letter-spacing="2">AGENT</text>
+    <text x="930" y="361" fill="#ffae82" font-size="15" letter-spacing="2">GATE</text>
+  </g>
+
+  <g transform="translate(1020 456)">
+    <rect width="140" height="74" rx="9" fill="#1b3440" stroke="#85dccb" stroke-opacity=".65"/>
+    <path d="M22 24H83M22 37H101M22 50H71" stroke="#b6ded6" stroke-width="3" stroke-linecap="round"/>
+    <circle cx="111" cy="51" r="5" fill="#85dccb"/>
+    <text x="70" y="95" fill="#a4c5c4" font-family="Arial, Helvetica, sans-serif" font-size="14" text-anchor="middle" letter-spacing="2">AUDIT</text>
+  </g>
+</svg>

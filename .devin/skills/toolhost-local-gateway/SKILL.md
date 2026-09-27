@@ -1,5 +1,5 @@
 ---
-name: toolhost-gateway
+name: toolhost-local-gateway
 description: How to use and operate toolhost — the local governed MCP gateway, one bearer-gated /mcp endpoint that fronts many MCP servers behind a three-tier tool gate (discovered/approved/enabled) with an agent-facing control plane. Use this whenever you see toolhost__* tools in your MCP surface, when a needed MCP tool isn't available and a toolhost-local gateway may be running, when the user mentions toolhost-local or an "MCP local gateway", or when setting up governed MCP access in a project. Agents self-serve the live surface via toolhost__search/enable/call — do NOT ask the human to add MCP servers directly if toolhost is present.
 ---
 
@@ -22,11 +22,11 @@ not by accident.
 
 The gateway is **stateless-first** (`"mode": "stateless"`, the default —
 SEP-2567, 2026-07-28 spec): no `Mcp-Session-Id`, every request
-independent. Legacy-protocol clients are served sessionlessly too. What
-they can't receive is *pushed* `tools/list_changed` — irrelevant to you:
-`toolhost__list`/`search`/`call` are pull-based and always current. Only
-if a client *must* hold a session for push does `"mode": "stateful"`
-exist — it's a config edit + restart, ask the human.
+independent. Modern clients can subscribe to `tools/list_changed` via
+`subscriptions/listen`. Legacy-protocol clients served sessionlessly
+cannot receive push; `toolhost__list`/`search`/`call` are the pull path.
+For older clients that require a held session for push, `"mode": "stateful"`
+is a config edit + restart — ask the human.
 
 ## If `toolhost__*` tools are in your surface
 
@@ -90,8 +90,7 @@ A local gateway is an attachable upstream. In another gateway's
 arrive already qualified (`cbm__search_graph`), trust them as-is instead
 of re-namespacing." Qualified names are stable through any depth of
 gateways. The inner gateway's own `toolhost__*` control plane is dropped
-at the edge (logged as skipped) — each gateway keeps its own. This is the
-path to the enterprise tier: same protocol, bigger door.
+at the edge (logged as skipped) — each gateway keeps its own.
 
 ## Setting up toolhost in a new project
 
@@ -103,7 +102,7 @@ go build -o toolhost ./cmd/toolhost   # source: the mcp-gateway repo
 ./toolhost discover                   # list every upstream tool
 ./toolhost approve <name__tool> ...   # HUMAN policy — what may ever be used
 ./toolhost enable [--only] <names>    # optional: shrink the live surface
-./toolhost serve                      # http://127.0.0.1:8188/mcp
+./toolhost serve                      # http://127.0.0.1:8080/mcp by default
 ```
 
 Upstream auth: `bearer` token, `client_credentials`, or interactive
@@ -117,14 +116,14 @@ Register ONE server — the gateway — instead of N:
 
 ```
 transport: http (streamable)
-url:       http://127.0.0.1:8188/mcp
+url:       http://127.0.0.1:8080/mcp
 header:    Authorization: Bearer <token from toolhost.json>
 ```
 
 | client | command |
 |---|---|
-| devin  | `devin mcp add toolhost --transport http http://127.0.0.1:8188/mcp -H "Authorization: Bearer <tok>"` |
-| claude | `claude mcp add toolhost --transport http http://127.0.0.1:8188/mcp -H "Authorization: Bearer <tok>"` |
+| devin  | `devin mcp add toolhost --transport http http://127.0.0.1:8080/mcp -H "Authorization: Bearer <tok>"` |
+| claude | `claude mcp add toolhost --transport http http://127.0.0.1:8080/mcp -H "Authorization: Bearer <tok>"` |
 | others | same shape in their JSON config (`"type":"http"` + `headers`) |
 
 ## Invariants worth remembering

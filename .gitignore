@@ -4,6 +4,15 @@
 /toolhost_tokens.json
 /*_audit.jsonl
 /audit.jsonl
+.env
+.env.*
+!.env.example
+
+# Private working notes, launch research, generated sources, and feedback.
+/.local/
+/.devin/mcp_config.local.json
+/.devin/skills/toolhost-local-gateway/feedback/*
+!/.devin/skills/toolhost-local-gateway/feedback/README.md
 
 # Binaries and OS noise.
 /toolhost
