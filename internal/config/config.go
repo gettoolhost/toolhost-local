@@ -75,10 +75,10 @@ type File struct {
 	// "stateful". Stateless is the primary design (SEP-2567 sessionless +
 	// the 2026-07-28 spec): no Mcp-Session-Id, every request independent.
 	// Legacy-protocol clients still work sessionlessly there — initialize,
-	// tools/list, tools/call each stand alone; what they lose is pushed
-	// tools/list_changed, which needs a held session. "stateful" is the
-	// opt-in compat mode for exactly that: session-bearing Streamable HTTP
-	// for clients that must hold Mcp-Session-Id.
+	// tools/list, tools/call each stand alone; they cannot receive
+	// tools/list_changed without a held session. Modern clients can subscribe
+	// through subscriptions/listen. "stateful" is the opt-in compat mode for
+	// older clients that must hold Mcp-Session-Id.
 	Mode string `json:"mode,omitempty"`
 	// Approved is the qualified-name list ("backend__tool") that Resolve
 	// intersects with discovery. discovered ≠ approved: everything not on
@@ -115,8 +115,8 @@ const (
 	DefaultAuditLog = "toolhost_audit.jsonl"
 
 	// ModeStateless is the default serving mode — sessionless Streamable
-	// HTTP. ModeStateful opts into session-bearing mode for clients that
-	// need pushed notifications/tools/list_changed.
+	// HTTP. ModeStateful opts into session-bearing mode for older clients
+	// that need held sessions for pushed notifications/tools/list_changed.
 	ModeStateless = "stateless"
 	ModeStateful  = "stateful"
 

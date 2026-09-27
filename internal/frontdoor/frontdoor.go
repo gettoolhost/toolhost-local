@@ -50,13 +50,12 @@ type Meta struct {
 
 // Options controls front-door serving. Stateless is the primary mode
 // (SEP-2567 sessionless): no Mcp-Session-Id, each request gets a temporary
-// session — pushed tools/list_changed can't reach stateless clients (the
-// toolhost__* meta-tools are the pull-based path), but reload, bearer auth,
-// and every governed call work unchanged. Legacy-protocol clients are
-// still served sessionlessly. Stateful is the compat opt-in for clients
-// that must hold a session for pushed list-changes. DNS rebinding
-// protection stays on either way (SDK default: non-localhost Host headers
-// on localhost addresses get 403).
+// session. Modern clients can receive pushed tools/list_changed through
+// subscriptions/listen; older clients served sessionlessly cannot. The
+// toolhost__* meta-tools are the pull-based path. Stateful is the compat
+// opt-in for older clients that must hold a session for pushed list changes.
+// DNS rebinding protection stays on either way (SDK default: non-localhost
+// Host headers on localhost addresses get 403).
 type Options struct {
 	Stateless bool
 }
@@ -155,8 +154,8 @@ func (s *Server) addTool(rt core.ResolvedTool) {
 
 // Reload swaps the served tool set in place: tools removed or re-pointed at
 // a reconnected upstream are unregistered, new ones added. The SDK emits
-// notifications/tools/list_changed, so connected agents see the new surface
-// without reconnecting.
+// notifications/tools/list_changed to subscribed modern clients and legacy
+// stateful sessions, so they can see the new surface without reconnecting.
 func (s *Server) Reload(res *core.Resolution) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -285,7 +284,7 @@ func (s *Server) addMetaTools(m *Meta) {
 	srv.AddTool(&mcp.Tool{
 		Name: "toolhost__enable",
 		Description: "Enable approved tools by qualified name — they join the live surface " +
-			"immediately (clients get tools/list_changed). Only approved tools can be " +
+			"immediately (subscribed clients get tools/list_changed). Only approved tools can be " +
 			"enabled; approval is a human decision.",
 		InputSchema: objSchema("names", "array", "qualified tool names to enable"),
 	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {

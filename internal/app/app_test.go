@@ -39,6 +39,22 @@ func (t authTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	return http.DefaultTransport.RoundTrip(clone)
 }
 
+type listenTransport struct {
+	token  string
+	opened chan struct{}
+}
+
+func (t listenTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, err := (authTransport{token: t.token}).RoundTrip(r)
+	if err == nil && r.Header.Get("Mcp-Method") == "subscriptions/listen" {
+		select {
+		case t.opened <- struct{}{}:
+		default:
+		}
+	}
+	return resp, err
+}
+
 func fixtureUpstream(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := mcp.NewServer(&mcp.Implementation{Name: "fixture", Version: "0"}, nil)
@@ -191,6 +207,71 @@ func TestGovernedCallEndToEnd(t *testing.T) {
 	}
 	if strings.Contains(string(raw), "up__secret") {
 		t.Fatalf("audit log records the unapproved call attempt:\n%s", raw)
+	}
+}
+
+func TestStatelessListChangedSubscription(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	up := &stubUpstream{ns: "up", tools: []*mcp.Tool{
+		{Name: "one", InputSchema: map[string]any{"type": "object"}},
+		{Name: "two", InputSchema: map[string]any{"type": "object"}},
+	}}
+	resolve := func(approved map[string]bool) *core.Resolution {
+		t.Helper()
+		res, err := core.Resolve([]core.Upstream{up}, approved, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+
+	fd, err := frontdoor.New(resolve(map[string]bool{"up__one": true}), "test-token", nil, nil,
+		&frontdoor.Options{Stateless: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw := httptest.NewServer(fd.Handler())
+	defer gw.Close()
+
+	notifications := make(chan struct{}, 1)
+	listening := make(chan struct{}, 1)
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0"}, &mcp.ClientOptions{
+		ToolListChangedHandler: func(context.Context, *mcp.ToolListChangedRequest) {
+			select {
+			case notifications <- struct{}{}:
+			default:
+			}
+		},
+	})
+	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
+		Endpoint:   gw.URL + "/mcp",
+		HTTPClient: &http.Client{Transport: listenTransport{token: "test-token", opened: listening}},
+	}, &mcp.ClientSessionOptions{ProtocolVersion: "2026-07-28"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	select {
+	case <-listening:
+	case <-ctx.Done():
+		t.Fatal("modern client did not open subscriptions/listen")
+	}
+
+	fd.Reload(resolve(map[string]bool{"up__one": true, "up__two": true}))
+	select {
+	case <-notifications:
+	case <-ctx.Done():
+		t.Fatal("stateless client did not receive tools/list_changed")
+	}
+	listed, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Tools) != 2 {
+		t.Fatalf("want 2 tools after reload, got %d", len(listed.Tools))
 	}
 }
 

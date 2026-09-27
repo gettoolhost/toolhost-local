@@ -460,8 +460,8 @@ func Serve(ctx context.Context, path string, w io.Writer, stdio bool) error {
 		srv := frontdoor.NewBare(res, sink, live.meta())
 		live.fd = srv
 		go live.watch(ctx)
-		fmt.Fprintf(w, "toolhost %s serving %d approved tools over stdio (audit: %s, watching config)\n",
-			core.Version, len(res.Tools), f.AuditLog)
+		fmt.Fprintf(w, "toolhost %s serving %s over stdio (audit: %s, watching config)\n",
+			core.Version, toolCount(len(res.Tools)), f.AuditLog)
 		return srv.ServeStdio(ctx)
 	}
 
@@ -481,12 +481,19 @@ func Serve(ctx context.Context, path string, w io.Writer, stdio bool) error {
 		_ = httpSrv.Shutdown(shutdownCtx)
 	}()
 
-	fmt.Fprintf(w, "toolhost %s serving %d approved tools on http://%s/mcp (audit: %s, watching config)\n",
-		core.Version, len(res.Tools), f.Listen, f.AuditLog)
+	fmt.Fprintf(w, "toolhost %s serving %s on http://%s/mcp (audit: %s, watching config)\n",
+		core.Version, toolCount(len(res.Tools)), f.Listen, f.AuditLog)
 	if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil
+}
+
+func toolCount(n int) string {
+	if n == 1 {
+		return "1 tool"
+	}
+	return fmt.Sprintf("%d tools", n)
 }
 
 // liveSet is the currently-served backend pool: sessions keyed by namespace
@@ -513,9 +520,10 @@ type liveSet struct {
 
 // watch polls the config file and hot-applies changes: unchanged backend
 // sessions are kept, added/changed/removed backends are re-dialed or
-// closed, and the tool surface is swapped in place — connected clients get
-// tools/list_changed. An unreadable or invalid config keeps the current
-// surface; the failure is logged and audited. Saving config via any
+// closed, and the tool surface is swapped in place — subscribed modern
+// clients and legacy stateful sessions get tools/list_changed. An unreadable
+// or invalid config keeps the current surface; the failure is logged and
+// audited. Saving config via any
 // toolhost command is atomic, so a torn file is only ever a hand-edit mid-
 // write — the next tick retries.
 func (l *liveSet) watch(ctx context.Context) {
@@ -602,7 +610,7 @@ func (l *liveSet) reload(ctx context.Context) {
 	}
 	l.fd.Reload(res)
 	l.sink.Record(core.Event{TS: time.Now(), Kind: core.EventReload})
-	fmt.Fprintf(l.w, "reloaded: %d tools serving\n", len(res.Tools))
+	fmt.Fprintf(l.w, "reloaded: %s serving\n", toolCount(len(res.Tools)))
 }
 
 // meta exposes the liveSet as the gateway's own control plane — the

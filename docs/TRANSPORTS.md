@@ -4,16 +4,16 @@
 
 | mode | config | wire |
 |---|---|---|
-| stateless | `"mode": "stateless"` (default) | Streamable HTTP, no `Mcp-Session-Id` — every POST independent |
-| stateful | `"mode": "stateful"` | Streamable HTTP with held sessions — pushed `tools/list_changed` reaches clients |
+| stateless | `"mode": "stateless"` (default) | Streamable HTTP, no `Mcp-Session-Id` — every POST independent; modern clients can use `subscriptions/listen` for list changes |
+| stateful | `"mode": "stateful"` | Legacy Streamable HTTP with held sessions for pushed `tools/list_changed` |
 | stdio | `serve --stdio` | MCP over stdin/stdout; no bearer — the spawning process owns the pipe |
 
 - Stateless speaks the 2026-07-28 spec (SEP-2567 sessionless +
   `server/discover` negotiation). Older-protocol clients are served
   sessionlessly — same surface, no held session.
-- What stateless can't do: *push*. `tools/list_changed` needs a held
-  session. The meta-tools are the pull-based path that works regardless
-  of client refresh behavior.
+- 2026-07-28 clients can opt in to pushed `tools/list_changed` through
+  `subscriptions/listen`. Older clients in stateless mode have no held
+  session for push. The meta-tools provide a pull-based path in either case.
 - Bearer auth gates `/mcp` in both HTTP modes; `/healthz` is open.
   DNS-rebinding protection stays on (SDK default). `mode` changes need a
   restart.

@@ -37,8 +37,9 @@ which oauth backends hold stored grants.
   current values kept.
 - Atomic saves (tmp+rename) mean the watcher never reads a torn write.
   An invalid config keeps the current surface and audits `reload` + err.
-- Stateful clients get `tools/list_changed`; stateless/stdio clients use
-  `toolhost__list`/`search`/`call` to see the new surface.
+- Modern stateless subscribers, legacy stateful clients, and stdio clients
+  can receive `tools/list_changed`. The `toolhost__list`/`search`/`call`
+  meta-tools provide a pull path when the client does not refresh.
 
 ## Files
 
@@ -63,6 +64,6 @@ which oauth backends hold stored grants.
 
 ## Upgrade
 
-`go install github.com/gettoolhost/toolhost-local/cmd/toolhost@latest` —
-or build from source. Config format is additive; `mode`/`call_timeout`
-default sanely when absent.
+From a source checkout, run `go build -o toolhost ./cmd/toolhost` and
+restart the running process or reinstall the user service. Config format
+is additive; `mode`/`call_timeout` default when absent.
