@@ -36,7 +36,7 @@ ${EDITOR:-vi} toolhost.json
 |---|---|
 | One endpoint | An MCP proxy for upstream stdio, Streamable HTTP, and SSE servers. |
 | Access | Downstream bearer check; upstream none, bearer, client credentials, or OAuth with PKCE. |
-| Agent controls | `toolhost__search/list/call/enable/disable/request/status` for a pull-based control plane. |
+| Agent controls | `toolhost__search/list/call/enable/disable/request/audit/status` for a pull-based control plane. |
 | Tool allowlist | `core.Resolve` registers only discovered, approved, enabled tools; invisible tools have no call handler. |
 | Audit log | JSONL events for governed calls, auth failures, agent governance actions, backend errors, and reloads. |
 | Local operation | One Go binary, JSON config, no database; config edits hot-reload the live surface. |
