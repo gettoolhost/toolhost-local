@@ -1,6 +1,6 @@
 ---
 name: toolhost-local-gateway
-description: How to use and operate toolhost — the local governed MCP gateway, one bearer-gated /mcp endpoint that fronts many MCP servers behind a three-tier tool gate (discovered/approved/enabled) with an agent-facing control plane. Use this whenever you see toolhost__* tools in your MCP surface, when a needed MCP tool isn't available and a toolhost-local gateway may be running, when the user mentions toolhost-local or an "MCP local gateway", or when setting up governed MCP access in a project. Agents self-serve the live surface via toolhost__search/enable/call — do NOT ask the human to add MCP servers directly if toolhost is present.
+description: How to use and operate toolhost-local — the local governed MCP gateway, one bearer-gated /mcp endpoint that fronts many MCP servers behind a three-tier tool gate (discovered/approved/enabled) with an agent-facing control plane. Use this whenever you see toolhost__* tools in your MCP surface, when a needed MCP tool isn't available and a toolhost-local gateway may be running, when the user mentions toolhost-local or an "MCP local gateway", or when setting up governed MCP access in a project. Agents self-serve the live surface via toolhost__search/enable/call — do NOT ask the human to add MCP servers directly if toolhost-local is present.
 ---
 
 # toolhost-local — the governed MCP gateway
@@ -41,6 +41,7 @@ MCP config:
 | `toolhost__disable` `{names[]}` | pull tools off NOW (they stay approved) |
 | `toolhost__call` `{name, arguments}` | call any enabled tool by name — works even if your client ignores `tools/list_changed` |
 | `toolhost__request` `{names[], reason}` | file an approval ask — queued in `requested`, a human's `toolhost approve` answers it |
+| `toolhost__audit` `{limit?, kind?}` | tail the audit log — what you called, what failed, what was refused |
 | `toolhost__status` | read-only gateway health: mode, backends, counts, pending asks |
 
 **The loop**: need a tool → `search` → if approved-but-disabled,

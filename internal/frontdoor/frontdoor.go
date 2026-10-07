@@ -46,6 +46,9 @@ type Meta struct {
 	Status func(name string) (core.ToolInfo, bool)
 	// Report returns the live gateway status for toolhost__status.
 	Report func() any
+	// Audit tails the audit log — the evidence trail of calls, denials, and
+	// governance actions — so agents can introspect without file access.
+	Audit func(ctx context.Context, limit int, kind string) ([]core.Event, error)
 }
 
 // Options controls front-door serving. Stateless is the primary mode
@@ -349,6 +352,36 @@ func (s *Server) addMetaTools(m *Meta) {
 			"requested": queued,
 			"note":      "a human reviews requests — nothing is approved yet",
 		}), nil
+	})
+
+	srv.AddTool(&mcp.Tool{
+		Name: "toolhost__audit",
+		Description: "Tail the gateway's audit log — the evidence trail of governed " +
+			"calls, refusals, governance actions, and reloads, newest last. " +
+			"Read-only; never contains arguments or secrets.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"limit": map[string]any{"type": "integer", "description": "max events to return (default 50, cap 500)"},
+				"kind":  map[string]any{"type": "string", "description": `optional filter: tool_call, auth_failed, backend_error, tool_forbidden, govern, reload`},
+			},
+		},
+	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		var a struct {
+			Limit int    `json:"limit"`
+			Kind  string `json:"kind"`
+		}
+		if err := json.Unmarshal(req.Params.Arguments, &a); err != nil {
+			return errResult("bad arguments: " + err.Error()), nil
+		}
+		if m.Audit == nil {
+			return errResult("audit log unavailable"), nil
+		}
+		events, err := m.Audit(ctx, a.Limit, a.Kind)
+		if err != nil {
+			return errResult(err.Error()), nil
+		}
+		return jsonResult(events), nil
 	})
 
 	srv.AddTool(&mcp.Tool{

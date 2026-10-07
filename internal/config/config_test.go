@@ -246,3 +246,66 @@ func TestRequestTools(t *testing.T) {
 		t.Fatalf("approve should consume the request: %+v", f.Requested)
 	}
 }
+
+func TestStdioEnvConfig(t *testing.T) {
+	// env knobs are stdio-only — on http they would be silently dead
+	// config, and ambiguity denies.
+	for _, b := range []*Backend{
+		{Transport: "http", URL: "http://x", Env: map[string]string{"K": "v"}},
+		{Transport: "http", URL: "http://x", EnvAllowlist: []string{"K"}},
+		{Transport: "http", URL: "http://x", EnvInherit: true},
+	} {
+		f := &File{Mode: ModeStateless, Backends: map[string]*Backend{"b": b}}
+		if err := f.validate(); err == nil || !strings.Contains(err.Error(), "stdio") {
+			t.Fatalf("env on non-stdio should fail, got %v", err)
+		}
+	}
+
+	// env_inherit already passes everything — an allowlist on top is a
+	// contradictory config, not a narrower one.
+	f := &File{Mode: ModeStateless, Backends: map[string]*Backend{
+		"b": {Transport: "stdio", Command: "x", EnvInherit: true, EnvAllowlist: []string{"K"}},
+	}}
+	if err := f.validate(); err == nil {
+		t.Fatal("env_inherit + env_allowlist should fail validation")
+	}
+
+	// Each knob alone validates.
+	for _, b := range []*Backend{
+		{Transport: "stdio", Command: "x", Env: map[string]string{"K": "v"}},
+		{Transport: "stdio", Command: "x", EnvAllowlist: []string{"K"}},
+		{Transport: "stdio", Command: "x", EnvInherit: true},
+	} {
+		f := &File{Mode: ModeStateless, Backends: map[string]*Backend{"b": b}}
+		if err := f.validate(); err != nil {
+			t.Fatalf("stdio env config should validate: %v", err)
+		}
+	}
+}
+
+func TestEnvValuesResolveRefs(t *testing.T) {
+	t.Setenv("TH_TEST_KEY", "up-key")
+
+	b := &Backend{Transport: "stdio", Command: "x",
+		Env: map[string]string{"API_KEY": "env:TH_TEST_KEY", "PLAIN": "literal"}}
+	rb, err := b.Resolved()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rb.Env["API_KEY"] != "up-key" || rb.Env["PLAIN"] != "literal" {
+		t.Fatalf("env refs unresolved: %+v", rb.Env)
+	}
+	// Receiver keeps the reference — the resolved secret never lands in
+	// the in-memory shape Save can write.
+	if b.Env["API_KEY"] != "env:TH_TEST_KEY" {
+		t.Fatalf("Resolved mutated the receiver: %q", b.Env["API_KEY"])
+	}
+
+	// A missing reference fails closed at validation.
+	bad := &File{Mode: ModeStateless, Backends: map[string]*Backend{
+		"b": {Transport: "stdio", Command: "x", Env: map[string]string{"K": "env:TH_TEST_MISSING"}},
+	}}
+	if err := bad.validate(); err == nil {
+		t.Fatal("unset env: reference in env value should fail validation")
+	}
+}

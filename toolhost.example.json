@@ -9,7 +9,9 @@
       "transport": "stdio",
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
-      "env": { "EXAMPLE_API_KEY": "env is how stdio backends get credentials" }
+      "env": { "EXAMPLE_API_KEY": "env:EXAMPLE_API_KEY" },
+      "env_allowlist": ["ANOTHER_HOST_VAR"],
+      "env_inherit": false
     },
     "remote": {
       "transport": "http",

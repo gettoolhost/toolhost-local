@@ -165,15 +165,7 @@ func transportFor(ctx context.Context, name string, cfg *config.Backend, opts *O
 			return nil, fmt.Errorf("stdio transport requires command")
 		}
 		cmd := exec.Command(cfg.Command, cfg.Args...)
-		// Inherit the caller's environment so upstream servers see the
-		// user's own API keys etc.; configured env wins on collision.
-		if len(cfg.Env) > 0 {
-			env := os.Environ()
-			for k, v := range cfg.Env {
-				env = append(env, k+"="+v)
-			}
-			cmd.Env = env
-		}
+		cmd.Env = stdioEnv(cfg)
 		return &mcp.CommandTransport{Command: cmd}, nil
 
 	case "http", "streamable_http":
@@ -205,6 +197,51 @@ func transportFor(ctx context.Context, name string, cfg *config.Backend, opts *O
 	default:
 		return nil, fmt.Errorf("transport must be %q, %q or %q, got %q", "stdio", "http", "sse", cfg.Transport)
 	}
+}
+
+// baselineEnv is the environment every stdio subprocess gets — enough for
+// runtimes (npx, uvx, python) to work without forwarding credentials.
+// Anything else reaches a backend only by being named: env entries,
+// env_allowlist names, or env_inherit for the everything-goes opt-out.
+// Least privilege is the gateway's whole pitch; env is no exception.
+var baselineEnv = []string{
+	"PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "TEMP", "TMP",
+	"USERPROFILE", "SystemRoot", "SystemDrive", "APPDATA", "COMSPEC",
+	"SHELL", "TERM", "USER", "LOGNAME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME",
+}
+
+// stdioEnv builds the subprocess environment: the whole host env under
+// env_inherit, else baseline + env_allowlist names present in it. Configured
+// env entries win on collision either way.
+func stdioEnv(cfg *config.Backend) []string {
+	env := map[string]string{}
+	if cfg.EnvInherit {
+		for _, kv := range os.Environ() {
+			k, v, _ := strings.Cut(kv, "=")
+			env[k] = v
+		}
+	} else {
+		allowed := make(map[string]bool, len(baselineEnv)+len(cfg.EnvAllowlist))
+		for _, n := range baselineEnv {
+			allowed[n] = true
+		}
+		for _, n := range cfg.EnvAllowlist {
+			allowed[n] = true
+		}
+		for _, kv := range os.Environ() {
+			if k, v, _ := strings.Cut(kv, "="); allowed[k] {
+				env[k] = v
+			}
+		}
+	}
+	for k, v := range cfg.Env {
+		env[k] = v
+	}
+	out := make([]string, 0, len(env))
+	for k, v := range env {
+		out = append(out, k+"="+v)
+	}
+	return out
 }
 
 func validateHTTPURL(raw string) error {

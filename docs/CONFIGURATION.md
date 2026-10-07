@@ -29,7 +29,9 @@ hand unless you mean it — `toolhost enable/disable` manages it.
 | field | applies to | notes |
 |---|---|---|
 | `transport` | all | `stdio` \| `http` \| `sse` (`streamable_http` alias for `http`) |
-| `command`, `args`, `env` | stdio | subprocess argv + environment — stdio creds live in `env` |
+| `command`, `args`, `env` | stdio | subprocess argv + environment — `env` values may be `env:` refs |
+| `env_allowlist` | stdio | host env vars forwarded on top of the baseline (`PATH`, `HOME`, runtime vars) |
+| `env_inherit` | stdio | forward the *whole* host environment — the least-safe option; mutually exclusive with `env_allowlist` |
 | `url` | http, sse | MCP endpoint |
 | `headers` | http, sse | static headers; values may be `env:` refs |
 | `auth` | http, sse | upstream auth — see AUTHENTICATION.md. Invalid on stdio |
@@ -44,6 +46,7 @@ meta-plane). Names are the namespace — rename = re-approval.
 Credential fields accept `"env:NAME"` instead of a literal:
 
 - top-level `token`
+- backend `env` values
 - backend `headers` values
 - `auth.token`, `auth.client_id`, `auth.client_secret`
 
@@ -55,8 +58,9 @@ not at first call.
 
 `config.Load` fails closed on: bad JSON, unknown `mode`, missing token
 resolution, bad `call_timeout`, reserved/invalid backend names, missing
-`command`/`url`, `auth` on stdio, malformed qualified names in
-`approved`/`enabled`.
+`command`/`url`, `auth` on stdio, `env`/`env_allowlist`/`env_inherit` on
+non-stdio, `env_inherit` + `env_allowlist` together, malformed qualified
+names in `approved`/`enabled`.
 
 ## Hot reload
 

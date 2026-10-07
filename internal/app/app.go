@@ -4,6 +4,7 @@
 package app
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -438,6 +439,9 @@ func Serve(ctx context.Context, path string, w io.Writer, stdio bool) error {
 		sink.Record(core.Event{TS: time.Now(), Kind: core.EventBackendError, Backend: s.Backend, Tool: s.Tool, Err: "skipped: " + s.Reason})
 		fmt.Fprintf(w, "skipped %s__%s: %s\n", s.Backend, s.Tool, s.Reason)
 	}
+	if len(f.Requested) > 0 {
+		fmt.Fprintf(w, "%d pending agent request(s) — review with: toolhost status\n", len(f.Requested))
+	}
 
 	live := &liveSet{
 		path:  path,
@@ -626,6 +630,7 @@ func (l *liveSet) meta() *frontdoor.Meta {
 		Request: l.metaRequest,
 		Status:  l.metaStatus,
 		Report:  l.metaReport,
+		Audit:   l.metaAudit,
 	}
 }
 
@@ -810,6 +815,72 @@ func (l *liveSet) metaStatus(name string) (core.ToolInfo, bool) {
 		}
 	}
 	return core.ToolInfo{}, false
+}
+
+// metaAudit is the agent-facing read on the evidence trail: the last `limit`
+// events, optionally one kind. Agents get introspection without file access;
+// the log never carried arguments or secrets, so it is safe to expose.
+func (l *liveSet) metaAudit(_ context.Context, limit int, kind string) ([]core.Event, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 50
+	}
+	return auditTail(l.auditLog, limit, kind)
+}
+
+// auditTail returns the last `limit` events from a JSONL audit log in
+// chronological order, filtered to `kind` when set. A bounded tail-read:
+// the last 1 MiB of the file is enough history for local introspection.
+func auditTail(path string, limit int, kind string) ([]core.Event, error) {
+	fh, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer fh.Close()
+
+	const tailWindow = 1 << 20
+	fi, err := fh.Stat()
+	if err != nil {
+		return nil, err
+	}
+	start := int64(0)
+	if fi.Size() > tailWindow {
+		start = fi.Size() - tailWindow
+	}
+	if _, err := fh.Seek(start, io.SeekStart); err != nil {
+		return nil, err
+	}
+
+	sc := bufio.NewScanner(fh)
+	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	if start > 0 {
+		sc.Scan() // the first line is torn — drop it
+	}
+	var lines []string
+	for sc.Scan() {
+		lines = append(lines, sc.Text())
+	}
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+
+	events := make([]core.Event, 0, limit)
+	for i := len(lines) - 1; i >= 0 && len(events) < limit; i-- {
+		var ev core.Event
+		if json.Unmarshal([]byte(lines[i]), &ev) != nil {
+			continue
+		}
+		if kind != "" && ev.Kind != kind {
+			continue
+		}
+		events = append(events, ev)
+	}
+	for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
+		events[i], events[j] = events[j], events[i]
+	}
+	return events, nil
 }
 
 // ConnectBackends dials every configured backend. Failures are per-backend:

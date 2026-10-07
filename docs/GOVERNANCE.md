@@ -27,6 +27,7 @@ Always registered, unaffected by reloads, reserved namespace:
 | `toolhost__enable` | `names[]` | approved → live now; refuses unapproved |
 | `toolhost__disable` | `names[]` | live → off now; stays approved |
 | `toolhost__request` | `names[]`, `reason` | queue an approval ask in `requested` |
+| `toolhost__audit` | `limit?`, `kind?` | tail the audit log (newest last) — introspection without file access |
 | `toolhost__status` | — | mode, per-backend up/tools, approved/enabled counts, pending requests |
 
 Trust split: **agents govern `enabled`; humans govern `approved`.**
@@ -57,4 +58,7 @@ Event: `{ts, kind, backend, tool, ms, err, remote}`.
 | `backend_error` | unreachable backend, skipped unsafe names |
 | `reload` | config hot-swap; `err` set when a bad save was rejected |
 
-Query it with any JSONL tool — e.g. `jq -c 'select(.kind=="tool_forbidden")'`.
+Humans query the file with any JSONL tool — e.g.
+`jq -c 'select(.kind=="tool_forbidden")'`. Agents read it through
+`toolhost__audit` (bounded tail, optional `kind` filter); the log never
+contains arguments or secrets, so exposing it is safe.

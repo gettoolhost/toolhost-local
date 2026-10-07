@@ -44,7 +44,7 @@ flowchart LR
   config --> reload["Reload"] --> surface
 ```
 
-- `toolhost__search`, `list`, and `status` read state; `request`, `enable`, and `disable` write config; `call` dispatches through the live set.
+- `toolhost__search`, `list`, `status`, and `audit` read state; `request`, `enable`, and `disable` write config; `call` dispatches through the live set.
 - An absent `enabled` list exposes every approved tool. An explicit empty list exposes none. `Reload` updates the resolved surface; modern subscribers and legacy stateful sessions receive `tools/list_changed`.
 
 ## Governed call
@@ -80,13 +80,14 @@ flowchart LR
 - **File-backed policy:** `approved`, `enabled`, and `requested` live in `toolhost.json`; atomic saves and a ~1.5s watcher let `Reload` swap the live surface without a database.
 - **Stateless default:** independent Streamable HTTP requests need no `Mcp-Session-Id`; 2026-07-28 clients can subscribe to list changes, while stateful mode serves older clients that need held sessions.
 - **Context boundary:** only deadline and cancellation cross into upstream calls; downstream protocol-version values could break a legacy upstream.
-- **Persistent meta-tools:** the seven `toolhost__*` tools sit outside the resolved set, so reload cannot remove the agent control plane.
+- **Persistent meta-tools:** the eight `toolhost__*` tools sit outside the resolved set, so reload cannot remove the agent control plane.
 - **Bounded calls:** `call_timeout` defaults to `60s`, permits a per-backend override, and never widens a caller's earlier deadline.
 - **Stdio front door:** `serve --stdio` reuses the governed surface for spawn-only clients; the owning process replaces bearer authentication.
 - **User service:** `install` uses launchd or systemd user units; it needs neither root nor a separate daemon.
 - **Ambiguity denies:** bad names skip, duplicate qualified names error, and unreachable backends contribute zero tools.
 - **Separated auth:** downstream uses one constant-time-checked bearer token; upstream auth is per backend, with OAuth grants stored outside config.
 - **Secret references:** `env:NAME` stays literal in saved config and resolves at the boundary; missing or empty variables fail closed.
+- **Least-privilege env:** stdio backends get a baseline + explicitly named vars (`env`, `env_allowlist`); `env_inherit` is the opt-out — a subprocess never sees the gateway's whole environment by default.
 
 ## Deliberately absent
 

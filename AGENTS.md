@@ -30,6 +30,8 @@ the separator without understanding why `::` was rejected.
   (`internal/audit`).
 - Ambiguity denies: bad names skip, collisions are hard errors, dead
   backends contribute zero tools.
+- stdio backends see a baseline env + explicitly named vars only (`env`,
+  `env_allowlist`); `env_inherit` is the opt-out — keep it that way.
 - Fail closed; never default-open on a missing or malformed anything.
 
 ## Local files

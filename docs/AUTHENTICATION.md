@@ -31,6 +31,20 @@ Two directions, kept apart:
   with the remedy.
 - `toolhost logout <backend>` drops the stored grant.
 
+## stdio backend environment
+
+A spawned backend sees a **baseline + named variables**, never the whole
+host environment — least privilege applies to processes, not just tools.
+
+- Baseline: `PATH`, `HOME`, `LANG`, `TMPDIR`, runtime/platform vars —
+  enough for `npx`/`uvx`/`python` to work.
+- `env`: literal values or `"env:NAME"` refs — always reach the backend,
+  win on collision.
+- `env_allowlist`: host vars forwarded by name — the way to pass an
+  already-exported credential (e.g. `["OPENAI_API_KEY"]`).
+- `env_inherit: true`: the opt-out — the gateway's entire environment
+  reaches the backend. Use deliberately.
+
 ## Token store
 
 `toolhost_tokens.json` beside the config (`0600`). Holds per-backend
@@ -40,10 +54,10 @@ source without re-authorizing. Never commit it — it's credentials.
 
 ## `env:` references
 
-`token`, `headers` values, `auth.token`, `auth.client_id`,
-`auth.client_secret` accept `"env:NAME"`. Resolved at use on copies —
-the on-disk file keeps the reference, so `Save` can never persist a
-secret. Unset/empty vars fail closed at load.
+`token`, `env` values, `headers` values, `auth.token`,
+`auth.client_id`, `auth.client_secret` accept `"env:NAME"`. Resolved at
+use on copies — the on-disk file keeps the reference, so `Save` can
+never persist a secret. Unset/empty vars fail closed at load.
 
 ## Files and permissions
 

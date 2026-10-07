@@ -24,6 +24,15 @@ type Backend struct {
 	Command string            `json:"command,omitempty"`
 	Args    []string          `json:"args,omitempty"`
 	Env     map[string]string `json:"env,omitempty"`
+	// EnvAllowlist names host environment variables forwarded to the
+	// subprocess beyond the safe baseline (PATH, HOME, ...). Credentials
+	// should reach a backend by being named — here, or via env values
+	// holding "env:" references — never by inheriting everything.
+	EnvAllowlist []string `json:"env_allowlist,omitempty"`
+	// EnvInherit forwards the entire host environment: every credential in
+	// the gateway's shell reaches the backend. The least-safe option —
+	// prefer Env + EnvAllowlist.
+	EnvInherit bool `json:"env_inherit,omitempty"`
 
 	// http/sse transports:
 	URL     string            `json:"url,omitempty"`
@@ -190,6 +199,16 @@ func (f *File) ResolvedToken() (string, error) {
 // in-memory shape keeps references, never secrets.
 func (b *Backend) Resolved() (*Backend, error) {
 	c := *b
+	if b.Env != nil {
+		c.Env = make(map[string]string, len(b.Env))
+		for k, v := range b.Env {
+			r, err := ResolveEnv(v)
+			if err != nil {
+				return nil, fmt.Errorf("env %s: %w", k, err)
+			}
+			c.Env[k] = r
+		}
+	}
 	if b.Headers != nil {
 		c.Headers = make(map[string]string, len(b.Headers))
 		for k, v := range b.Headers {
@@ -255,6 +274,12 @@ func (f *File) validate() error {
 			}
 		default:
 			return fmt.Errorf("backend %q: transport must be %q, %q or %q", name, "stdio", "http", "sse")
+		}
+		if b.Transport != "stdio" && (len(b.Env) > 0 || len(b.EnvAllowlist) > 0 || b.EnvInherit) {
+			return fmt.Errorf("backend %q: env, env_allowlist and env_inherit only apply to stdio transports", name)
+		}
+		if b.EnvInherit && len(b.EnvAllowlist) > 0 {
+			return fmt.Errorf("backend %q: env_inherit already passes every variable — env_allowlist is redundant", name)
 		}
 		if b.CallTimeout != "" {
 			if _, err := parseTimeout(b.CallTimeout); err != nil {
