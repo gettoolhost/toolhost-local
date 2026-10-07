@@ -14,8 +14,9 @@
 /.devin/skills/toolhost-local-gateway/feedback/*
 !/.devin/skills/toolhost-local-gateway/feedback/README.md
 
-# Binaries and OS noise.
+# Binaries, release artifacts, and OS noise.
 /toolhost
 /toolhost.exe
+/dist/
 .DS_Store
 serve.log
