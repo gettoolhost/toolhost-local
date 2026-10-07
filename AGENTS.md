@@ -34,6 +34,11 @@ the separator without understanding why `::` was rejected.
   `env_allowlist`); `env_inherit` is the opt-out — keep it that way.
 - Fail closed; never default-open on a missing or malformed anything.
 
+- Releases are always `v0.0.x` patch bumps — never bump minor/major.
+- Default config resolution: `./toolhost.json` if present, else
+  `~/.config/toolhost/toolhost.json`; `-c` overrides. Relative
+  `audit_log` anchors to the config dir.
+
 ## Local files
 
 - Keep private notes, drafts, generated source art, credentials, and runtime

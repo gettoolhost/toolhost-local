@@ -247,6 +247,34 @@ func TestRequestTools(t *testing.T) {
 	}
 }
 
+func TestDefaultPath(t *testing.T) {
+	// Explicit -c always wins.
+	if got := DefaultPath("/tmp/x.json"); got != "/tmp/x.json" {
+		t.Fatalf("explicit path should win, got %q", got)
+	}
+
+	// A project-local config beats the canonical home.
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.WriteFile(filepath.Join(dir, "toolhost.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := DefaultPath(""); got != "toolhost.json" {
+		t.Fatalf("project config should win, got %q", got)
+	}
+
+	// No project config → the canonical home.
+	if err := os.Remove(filepath.Join(dir, "toolhost.json")); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", home)
+	want := filepath.Join(home, "toolhost", "toolhost.json")
+	if got := DefaultPath(""); got != want {
+		t.Fatalf("want config home %q, got %q", want, got)
+	}
+}
+
 func TestStdioEnvConfig(t *testing.T) {
 	// env knobs are stdio-only — on http they would be silently dead
 	// config, and ambiguity denies.

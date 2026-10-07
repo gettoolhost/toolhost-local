@@ -1,5 +1,22 @@
 # Operations
 
+## Install it
+
+```bash
+brew install gettoolhost/tap/toolhost      # or: go install github.com/gettoolhost/toolhost-local/cmd/toolhost@latest
+toolhost init                              # writes ~/.config/toolhost/toolhost.json (or ./toolhost.json via -c)
+toolhost doctor                            # verify: config, token, port, backends, grants, service
+toolhost attach <client>                   # register with your agent: claude · devin · cursor · windsurf
+toolhost install                           # persist as a user service (launchd / systemd --user)
+```
+
+Default config resolution: `./toolhost.json` when present (a directory
+holding a config is its own context), else the canonical home
+`~/.config/toolhost/` (`$XDG_CONFIG_HOME/toolhost` when set). `-c`
+overrides everything. The audit log and token store always sit beside
+whichever config is in play — a relative `audit_log` anchors to the
+config's directory, not the process cwd.
+
 ## Run it
 
 ```bash
@@ -64,6 +81,7 @@ which oauth backends hold stored grants.
 
 ## Upgrade
 
-From a source checkout, run `go build -o toolhost ./cmd/toolhost` and
-restart the running process or reinstall the user service. Config format
-is additive; `mode`/`call_timeout` default when absent.
+`brew upgrade toolhost`, `go install ...@latest`, or rebuild from source
+and restart the process / reinstall the service. Config format is
+additive; `mode`/`call_timeout` default when absent. Releases are
+`v0.0.x` patch bumps — breaking changes land only between minor series.

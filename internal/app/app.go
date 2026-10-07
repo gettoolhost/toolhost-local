@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -40,6 +41,11 @@ const connectTimeout = 30 * time.Second
 func Init(path string, w io.Writer) error {
 	if _, err := os.Stat(path); err == nil {
 		return fmt.Errorf("%s already exists (refusing to overwrite — delete it first if you mean it)", path)
+	}
+	if dir := filepath.Dir(path); dir != "." && dir != "" {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return fmt.Errorf("create config dir %s: %w", dir, err)
+		}
 	}
 	token, err := newToken()
 	if err != nil {
@@ -414,7 +420,15 @@ func Serve(ctx context.Context, path string, w io.Writer, stdio bool) error {
 		return fmt.Errorf("config %s has no token — run toolhost init or set \"token\"", path)
 	}
 
-	sink, err := audit.Open(f.AuditLog)
+	// A relative audit_log anchors to the config file's directory — the
+	// canonical home only works if companions live beside the config no
+	// matter where serve runs. (The File keeps the literal value so a
+	// load/save cycle never bakes an absolute path into the config.)
+	auditLog := f.AuditLog
+	if !filepath.IsAbs(auditLog) {
+		auditLog = filepath.Join(filepath.Dir(path), auditLog)
+	}
+	sink, err := audit.Open(auditLog)
 	if err != nil {
 		return err
 	}
@@ -450,7 +464,7 @@ func Serve(ctx context.Context, path string, w io.Writer, stdio bool) error {
 		ups:   map[string]core.Upstream{},
 		cfgs:  map[string]*config.Backend{},
 		opts:  &upstream.Options{Tokens: tokens, Out: io.Discard, DefaultCallTimeout: callTimeout(f)},
-		token: f.Token, listen: f.Listen, auditLog: f.AuditLog,
+		token: f.Token, listen: f.Listen, auditLog: auditLog,
 		mode: f.Mode,
 	}
 	for _, up := range ups {
@@ -565,7 +579,11 @@ func (l *liveSet) reload(ctx context.Context) {
 		l.sink.Record(core.Event{TS: time.Now(), Kind: core.EventReload, Err: err.Error()})
 		return
 	}
-	if f.Token != l.token || f.Listen != l.listen || f.AuditLog != l.auditLog || f.Mode != l.mode {
+	reloadAudit := f.AuditLog
+	if !filepath.IsAbs(reloadAudit) {
+		reloadAudit = filepath.Join(filepath.Dir(l.path), reloadAudit)
+	}
+	if f.Token != l.token || f.Listen != l.listen || reloadAudit != l.auditLog || f.Mode != l.mode {
 		fmt.Fprintln(l.w, "reload: listen/token/audit_log/mode changes take effect on restart — keeping current values")
 	}
 	// call_timeout is hot-reloadable — it applies per call, not per session.

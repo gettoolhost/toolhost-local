@@ -72,6 +72,7 @@ ${EDITOR:-vi} toolhost.json
 }
 ```
 
+- Default config location: `./toolhost.json` when present, else `~/.config/toolhost/toolhost.json` (`XDG_CONFIG_HOME` honored); `-c <path>` overrides. Verify an install with `toolhost doctor`; register your agent with `toolhost attach <claude|devin|cursor|windsurf>`.
 - For this `env:` sample, export `TOOLHOST_TOKEN` before `discover` or `serve`; `init` instead generates a usable token directly. Credential references stay literal in saved config and fail closed when unset.
 - Default front door: stateless Streamable HTTP (MCP `2026-07-28`); modern clients can subscribe to list changes. `mode: "stateful"` adds held sessions for pushed `tools/list_changed` with older clients; `serve --stdio` supports spawn-only clients.
 - Upstream `http`/`sse` auth, OAuth grants, federation, and per-backend timeouts are documented below.

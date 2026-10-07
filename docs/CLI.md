@@ -1,11 +1,17 @@
 # CLI
 
-`toolhost <verb> [-c config]`. Default config: `toolhost.json` in cwd.
+`toolhost <verb> [-c config]`. Default config resolution: `./toolhost.json`
+if present, else `$XDG_CONFIG_HOME/toolhost/toolhost.json` (fallback
+`~/.config/toolhost/toolhost.json`). `-c` always wins.
 
 ## Lifecycle
 
 ```bash
 toolhost init          # write config + fresh th_* bearer token; refuses overwrite
+toolhost doctor        # verify an install: config, token, port, backends, grants, service
+toolhost attach <client>   # write the MCP server entry — claude | devin | cursor | windsurf
+toolhost attach --print    # print the mcpServers JSON for any other client
+toolhost attach --stdio <client>  # attach the spawn form (serve --stdio, no bearer)
 toolhost serve         # HTTP /mcp on <listen>; bearer-gated; watches config
 toolhost serve --stdio # same surface over stdin/stdout — no bearer, pipe owner is authority
 toolhost status        # live report via toolhost__status; config-only fallback if down

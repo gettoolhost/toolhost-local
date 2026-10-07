@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -147,6 +148,33 @@ func Load(path string) (*File, error) {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}
 	return &f, nil
+}
+
+// ConfigHome is toolhost's canonical home — $XDG_CONFIG_HOME/toolhost, else
+// ~/.config/toolhost. Config, audit log, and token store live here when no
+// project-local toolhost.json exists.
+func ConfigHome() string {
+	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" {
+		return filepath.Join(x, "toolhost")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "toolhost" // last resort: cwd
+	}
+	return filepath.Join(home, ".config", "toolhost")
+}
+
+// DefaultPath resolves which config a command reads when -c isn't given:
+// an explicit flag wins; a ./toolhost.json in the working directory beats
+// the canonical home (a directory holding a config IS its own context).
+func DefaultPath(explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	if _, err := os.Stat("toolhost.json"); err == nil {
+		return "toolhost.json"
+	}
+	return filepath.Join(ConfigHome(), "toolhost.json")
 }
 
 func (f *File) applyDefaults() {
