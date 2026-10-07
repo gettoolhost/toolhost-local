@@ -8,8 +8,10 @@
 .env.*
 !.env.example
 
-# Private working notes, launch research, generated sources, and feedback.
+# Private working notes, launch research, generated sources, reference
+# checkouts, and feedback.
 /.local/
+/ai_refer/
 /.devin/mcp_config.local.json
 /.devin/skills/toolhost-local-gateway/feedback/*
 !/.devin/skills/toolhost-local-gateway/feedback/README.md
