@@ -442,3 +442,27 @@ func TestLooksLikeOursRejectsForeignShapes(t *testing.T) {
 		t.Fatal("a foreign serve --stdio spawn must be refused")
 	}
 }
+
+// Untouched fields must round-trip exactly — a float64 decode loses
+// precision on ints > 2^53 (nanos timestamps, big IDs in ~/.claude.json).
+func TestCommitPreservesLargeIntegers(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "claude.json")
+	writeJSON(t, path, `{"installId": 9007199254740993, "sessionStartNanos": 1757000000000000123, "mcpServers": {}}`)
+	p, err := planMCPServerEntry(path, "mcpServers", serverEntry("http://x/mcp", "th_k", "", "", "url", false), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := commitMCPServerEntry(p); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, lit := range []string{"9007199254740993", "1757000000000000123"} {
+		if !strings.Contains(string(raw), lit) {
+			t.Fatalf("big integer corrupted on merge — want %s in:\n%s", lit, raw)
+		}
+	}
+}

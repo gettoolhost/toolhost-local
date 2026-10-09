@@ -278,7 +278,13 @@ func planMCPServerEntry(path, topKey string, entry map[string]any, conditional b
 	existed := err == nil
 	switch {
 	case err == nil:
-		if err := json.Unmarshal(raw, &doc); err != nil {
+		// UseNumber keeps every JSON number as its literal — a plain
+		// Unmarshal turns ints > 2^53 into float64s and re-encoding
+		// silently corrupts fields we never touched (nanosecond
+		// timestamps, big install IDs in ~/.claude.json).
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.UseNumber()
+		if err := dec.Decode(&doc); err != nil {
 			return nil, fmt.Errorf("parse %s: %w", path, err)
 		}
 		if doc == nil {

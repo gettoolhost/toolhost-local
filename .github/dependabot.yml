@@ -1,0 +1,8 @@
+# Keep SHA-pinned workflow actions current — pinning without an updater
+# rots; dependabot bumps the SHA and the # version comment together.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
