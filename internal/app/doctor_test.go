@@ -68,3 +68,26 @@ func TestDoctorProbesAnchoredAuditDir(t *testing.T) {
 		t.Fatalf("want %q in output:\n%s", want, out.String())
 	}
 }
+
+// A file sitting where the audit directory belongs is a broken config —
+// serve will fail, so doctor must too, not shrug "absent".
+func TestDoctorFailsOnFileAtAuditDir(t *testing.T) {
+	cfgDir := t.TempDir()
+	t.Chdir(t.TempDir())
+	if err := os.WriteFile(filepath.Join(cfgDir, "logs"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(cfgDir, "toolhost.json")
+	if err := os.WriteFile(cfg, []byte(`{"token":"t","audit_log":"logs/audit.jsonl"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	err := Doctor(context.Background(), cfg, &out)
+	if err == nil {
+		t.Fatalf("doctor must fail when the audit dir is a file:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "not a directory") {
+		t.Fatalf("want a not-a-directory failure, got:\n%s", out.String())
+	}
+}

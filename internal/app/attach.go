@@ -372,15 +372,19 @@ func sameJSON(a, b any) bool {
 // run "serve --stdio"). Anything else named toolhost belongs to somebody
 // else.
 func looksLikeOurs(entry map[string]any) bool {
+	// HTTP shape: a bearer plus OUR /mcp endpoint path — a bare bearer
+	// alone can't prove ownership; any authenticated MCP server matches.
 	if h, ok := entry["headers"].(map[string]any); ok {
 		if auth, ok := h["Authorization"].(string); ok && strings.HasPrefix(auth, "Bearer ") {
 			for _, k := range []string{"url", "serverUrl", "httpUrl"} {
-				if _, ok := entry[k].(string); ok {
+				if u, ok := entry[k].(string); ok && strings.HasSuffix(u, "/mcp") {
 					return true
 				}
 			}
 		}
 	}
+	// stdio shape: spawns a toolhost-named binary with serve --stdio —
+	// args alone can't prove ownership either.
 	args, _ := entry["args"].([]any)
 	serve := false
 	for i, a := range args {
@@ -388,8 +392,8 @@ func looksLikeOurs(entry map[string]any) bool {
 			serve = true
 		}
 	}
-	_, hasCmd := entry["command"].(string)
-	return hasCmd && serve
+	cmd, hasCmd := entry["command"].(string)
+	return hasCmd && serve && strings.Contains(filepath.Base(cmd), "toolhost")
 }
 
 // commitMCPServerEntry writes the planned merge atomically: tmp + rename,

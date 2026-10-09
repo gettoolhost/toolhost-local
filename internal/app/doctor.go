@@ -71,15 +71,25 @@ func Doctor(ctx context.Context, cfgPath string, w io.Writer) error {
 		auditPath = filepath.Join(filepath.Dir(cfgPath), auditPath)
 	}
 	auditDir := filepath.Dir(auditPath)
-	if fi, err := os.Stat(auditDir); err != nil || !fi.IsDir() {
-		fmt.Fprintf(w, "- audit dir %s absent — serve will create it\n", auditDir)
-	} else if probe, err := os.CreateTemp(auditDir, ".doctor-*"); err != nil {
-		fmt.Fprintf(w, "✗ audit dir %s: %v\n", auditDir, err)
+	fi, err := os.Stat(auditDir)
+	switch {
+	case err == nil && !fi.IsDir():
+		// Exists but isn't a directory — serve's MkdirAll will fail
+		// outright; that's a broken config, not an absent dir.
+		fmt.Fprintf(w, "✗ audit dir %s is not a directory\n", auditDir)
 		failed++
-	} else {
-		probe.Close()
-		os.Remove(probe.Name())
-		fmt.Fprintf(w, "✓ audit log dir %s writable\n", auditDir)
+	case err != nil:
+		fmt.Fprintf(w, "- audit dir %s absent — serve will create it\n", auditDir)
+	default:
+		probe, err := os.CreateTemp(auditDir, ".doctor-*")
+		if err != nil {
+			fmt.Fprintf(w, "✗ audit dir %s: %v\n", auditDir, err)
+			failed++
+		} else {
+			probe.Close()
+			os.Remove(probe.Name())
+			fmt.Fprintf(w, "✓ audit log dir %s writable\n", auditDir)
+		}
 	}
 
 	// Backends: transport-level sanity, not a full MCP handshake — doctor

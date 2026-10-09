@@ -424,3 +424,21 @@ func TestDryRunRedactsBearer(t *testing.T) {
 		t.Fatalf("expected a redacted bearer in output:\n%s", buf.String())
 	}
 }
+
+// A foreign entry that merely carries a bearer + url is not ours — the
+// heuristic needs our /mcp path or a toolhost-named spawn, else we'd
+// clobber an unrelated authenticated server.
+func TestLooksLikeOursRejectsForeignShapes(t *testing.T) {
+	// Generic authenticated HTTP server — bearer alone proves nothing.
+	path := filepath.Join(t.TempDir(), "mcp.json")
+	writeJSON(t, path, `{"mcpServers": {"toolhost": {"url": "https://api.other.io/v1", "headers": {"Authorization": "Bearer their-key"}}}}`)
+	if _, err := planMCPServerEntry(path, "mcpServers", serverEntry("http://x/mcp", "th_k", "", "", "url", false), false); err == nil {
+		t.Fatal("a foreign bearer+url entry must be refused, not refreshed")
+	}
+	// Another binary that happens to take serve --stdio args.
+	path2 := filepath.Join(t.TempDir(), "mcp.json")
+	writeJSON(t, path2, `{"mcpServers": {"toolhost": {"command": "/opt/otheR-mcpd", "args": ["serve", "--stdio"]}}}`)
+	if _, err := planMCPServerEntry(path2, "mcpServers", serverEntry("", "", "/bin/toolhost", "/c", "url", true), false); err == nil {
+		t.Fatal("a foreign serve --stdio spawn must be refused")
+	}
+}
