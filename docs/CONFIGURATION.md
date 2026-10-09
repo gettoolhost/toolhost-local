@@ -11,10 +11,12 @@ Written `0600`, saved atomically (tmp+rename). Full example:
 | `listen` | string | `127.0.0.1:8080` | bind for `/mcp` + `/healthz`. Non-loopback exposes the LAN — bearer is the only gate |
 | `token` | string | — | gateway bearer token; `env:` ref allowed |
 | `audit_log` | string | `toolhost_audit.jsonl` | JSONL evidence file, `0600` |
+| `audit_max_mb` | int | `10` | audit rotation cap in MiB — past it the live file becomes `<audit_log>.1` and a fresh segment opens |
 | `mode` | `"stateless"` \| `"stateful"` | `stateless` | restart-required |
 | `call_timeout` | Go duration | `60s` | bounds every upstream call; caller's tighter deadline wins |
 | `backends` | object | `{}` | name → backend block; name becomes the `backend__` prefix |
 | `approved` | string[] | `[]` | qualified names a human permits |
+| `approved_schemas` | object | — | `name → "sha256:<64hex>"` pin written by `approve` — binds the approval to the schema reviewed; drift drops the tool |
 | `enabled` | string[] | absent | live-surface allowlist — see semantics below |
 | `requested` | object[] | — | agent-filed requests; written by `toolhost__request`, consumed by `approve` |
 

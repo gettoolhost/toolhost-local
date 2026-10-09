@@ -41,7 +41,7 @@ func TestResolveGateTiers(t *testing.T) {
 	up := &stub{ns: "fs", tools: []*mcp.Tool{tool("read_file"), tool("write_file"), tool("delete_file")}}
 
 	// Approved but no enabled list: every approved tool is live.
-	res, err := Resolve([]Upstream{up}, map[string]bool{"fs__read_file": true, "fs__write_file": true}, nil)
+	res, err := Resolve([]Upstream{up}, map[string]bool{"fs__read_file": true, "fs__write_file": true}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func TestResolveGateTiers(t *testing.T) {
 	}
 
 	// Approved names that were never discovered produce nothing.
-	res, err = Resolve(nil, map[string]bool{"ghost__tool": true}, nil)
+	res, err = Resolve(nil, map[string]bool{"ghost__tool": true}, nil, nil)
 	if err != nil || len(res.Tools) != 0 {
 		t.Fatalf("ghost approval: want empty resolution, got %+v err=%v", res.Tools, err)
 	}
@@ -65,7 +65,7 @@ func TestResolveGateTiers(t *testing.T) {
 	// An enabled list intersects: enabled∩approved is the live surface.
 	enabled := map[string]bool{"fs__write_file": true, "fs__delete_file": true}
 	res, err = Resolve([]Upstream{up},
-		map[string]bool{"fs__read_file": true, "fs__write_file": true}, enabled)
+		map[string]bool{"fs__read_file": true, "fs__write_file": true}, enabled, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestResolveGateTiers(t *testing.T) {
 
 	// An explicit empty enabled set exposes nothing — never collapses to all.
 	res, err = Resolve([]Upstream{up},
-		map[string]bool{"fs__read_file": true}, map[string]bool{})
+		map[string]bool{"fs__read_file": true}, map[string]bool{}, nil)
 	if err != nil || len(res.Tools) != 0 {
 		t.Fatalf("empty enabled set: want no tools, got %v", qualifiedNames(res))
 	}
@@ -84,7 +84,7 @@ func TestResolveGateTiers(t *testing.T) {
 
 func TestResolvePreservesOriginAndUpstream(t *testing.T) {
 	up := &stub{ns: "gh", tools: []*mcp.Tool{tool("search")}}
-	res, err := Resolve([]Upstream{up}, map[string]bool{"gh__search": true}, nil)
+	res, err := Resolve([]Upstream{up}, map[string]bool{"gh__search": true}, nil, nil)
 	if err != nil || len(res.Tools) != 1 {
 		t.Fatalf("want one resolved tool, got %+v err=%v", res.Tools, err)
 	}
@@ -106,7 +106,7 @@ func TestResolveAmbiguityDenies(t *testing.T) {
 	pb := &stub{ns: "b", passthrough: true, tools: []*mcp.Tool{tool("x__y")}}
 	_ = a
 	_ = b
-	_, err := Resolve([]Upstream{pa, pb}, map[string]bool{"x__y": true}, nil)
+	_, err := Resolve([]Upstream{pa, pb}, map[string]bool{"x__y": true}, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "ambiguous") {
 		t.Fatalf("duplicate qualified name: want ambiguity error, got %v", err)
 	}
@@ -122,7 +122,7 @@ func TestResolveSkipsBadNames(t *testing.T) {
 	res, err := Resolve([]Upstream{up}, map[string]bool{
 		"fs__ok_tool": true,
 		"fs__has.dot": true, "fs__has__separator": true,
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestResolvePassthrough(t *testing.T) {
 	}}
 	res, err := Resolve([]Upstream{up}, map[string]bool{
 		"cbm__search_graph": true, "edge__cbm__search_graph": true,
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,6 +163,62 @@ func TestResolvePassthrough(t *testing.T) {
 	// namespace never appears.
 	if res.Tools[0].Upstream != up {
 		t.Fatal("passthrough tool lost its upstream")
+	}
+}
+
+// Schema-pinning: approval binds to the contract reviewed. A matching pin
+// serves; a changed schema drops the tool into Drifted (invisible and
+// uncallable); no pin means unbound — enforced as before.
+func TestResolveSchemaDrift(t *testing.T) {
+	toolV1 := tool("read_file")
+	up := &stub{ns: "fs", tools: []*mcp.Tool{toolV1}}
+	pin := SchemaHash(toolV1)
+	if !strings.HasPrefix(pin, "sha256:") || len(pin) != 7+64 {
+		t.Fatalf("bad pin shape: %q", pin)
+	}
+
+	// Pinned and unchanged → served.
+	res, err := Resolve([]Upstream{up}, map[string]bool{"fs__read_file": true}, nil,
+		map[string]string{"fs__read_file": pin})
+	if err != nil || len(res.Tools) != 1 || len(res.Drifted) != 0 {
+		t.Fatalf("matching pin should serve, got tools=%v drifted=%v err=%v", qualifiedNames(res), res.Drifted, err)
+	}
+
+	// The upstream's schema changed — approval lapses.
+	toolV2 := tool("read_file")
+	toolV2.InputSchema = map[string]any{"type": "object", "properties": map[string]any{"force": map[string]any{"type": "boolean"}}}
+	up2 := &stub{ns: "fs", tools: []*mcp.Tool{toolV2}}
+	res, err = Resolve([]Upstream{up2}, map[string]bool{"fs__read_file": true}, nil,
+		map[string]string{"fs__read_file": pin})
+	if err != nil || len(res.Tools) != 0 {
+		t.Fatalf("drifted tool must drop off the surface, got %v err=%v", qualifiedNames(res), err)
+	}
+	if len(res.Drifted) != 1 || res.Drifted[0].Qualified != "fs__read_file" || res.Drifted[0].Reason == "" {
+		t.Fatalf("drift needs evidence: %+v", res.Drifted)
+	}
+
+	// Unbound approval (no pin) — enforced as before.
+	res, err = Resolve([]Upstream{up2}, map[string]bool{"fs__read_file": true}, nil, nil)
+	if err != nil || len(res.Tools) != 1 {
+		t.Fatalf("unbound approval should serve, got %v err=%v", qualifiedNames(res), err)
+	}
+}
+
+// The hash is of the canonical contract — whitespace and key order must
+// not drift the pin.
+func TestSchemaHashCanonical(t *testing.T) {
+	a := &mcp.Tool{InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+		"a": map[string]any{"type": "string"}, "b": map[string]any{"type": "integer"},
+	}}}
+	var raw any
+	_ = json.Unmarshal([]byte(`{"properties":{"b":{"type":"integer"},"a":{"type":"string"}},"type":"object"}`), &raw)
+	b := &mcp.Tool{InputSchema: raw}
+	if SchemaHash(a) != SchemaHash(b) {
+		t.Fatal("same schema, different serialization must hash identically")
+	}
+	c := &mcp.Tool{InputSchema: map[string]any{"type": "object"}}
+	if SchemaHash(a) == SchemaHash(c) {
+		t.Fatal("different schemas must hash differently")
 	}
 }
 

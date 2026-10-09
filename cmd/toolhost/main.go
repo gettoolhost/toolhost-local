@@ -53,7 +53,7 @@ func main() {
 		fs := flag.NewFlagSet(os.Args[1], flag.ExitOnError)
 		cfg := fs.String("c", "", cfgFlagUsage)
 		_ = fs.Parse(os.Args[2:])
-		err = app.EditApprovals(config.DefaultPath(*cfg), fs.Args(), os.Args[1] == "approve", os.Stdout)
+		err = app.EditApprovals(context.Background(), config.DefaultPath(*cfg), fs.Args(), os.Args[1] == "approve", os.Stdout)
 
 	case "enable", "disable":
 		fs := flag.NewFlagSet(os.Args[1], flag.ExitOnError)

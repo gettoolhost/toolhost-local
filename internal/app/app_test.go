@@ -105,7 +105,7 @@ func TestGovernedCallEndToEnd(t *testing.T) {
 	}
 
 	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
-	sink, err := audit.Open(auditPath)
+	sink, err := audit.Open(auditPath, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestGovernedCallEndToEnd(t *testing.T) {
 	}
 	defer func() { _ = ups[0].Close() }()
 
-	res, err := core.Resolve(ups, cfg.ApprovedSet(), nil)
+	res, err := core.Resolve(ups, cfg.ApprovedSet(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +220,7 @@ func TestStatelessListChangedSubscription(t *testing.T) {
 	}}
 	resolve := func(approved map[string]bool) *core.Resolution {
 		t.Helper()
-		res, err := core.Resolve([]core.Upstream{up}, approved, nil)
+		res, err := core.Resolve([]core.Upstream{up}, approved, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -284,7 +284,7 @@ func TestResolveSkipsUnwireableAndUnapproved(t *testing.T) {
 			{Name: "ok"}, {Name: "New Tool"}, {Name: "hidden"},
 		}},
 	}
-	res, err := core.Resolve(ups, map[string]bool{"a__ok": true, "a__New Tool": true}, nil)
+	res, err := core.Resolve(ups, map[string]bool{"a__ok": true, "a__New Tool": true}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,7 +304,7 @@ func TestResolveEnabledSubset(t *testing.T) {
 	}
 	approved := map[string]bool{"a__x": true, "a__y": true, "a__z": true}
 
-	res, err := core.Resolve(ups, approved, map[string]bool{"a__x": true})
+	res, err := core.Resolve(ups, approved, map[string]bool{"a__x": true}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,7 +314,7 @@ func TestResolveEnabledSubset(t *testing.T) {
 
 	// An enabled-but-unapproved name contributes nothing — enable is never
 	// a backdoor around approval.
-	res, err = core.Resolve(ups, map[string]bool{"a__x": true}, map[string]bool{"a__x": true, "a__y": true})
+	res, err = core.Resolve(ups, map[string]bool{"a__x": true}, map[string]bool{"a__x": true, "a__y": true}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -571,7 +571,7 @@ func TestResolvePassthrough(t *testing.T) {
 			{Name: "bare_name"},         // not qualified — skipped
 		}}},
 	}
-	res, err := core.Resolve(ups, map[string]bool{"cbm__search_graph": true}, nil)
+	res, err := core.Resolve(ups, map[string]bool{"cbm__search_graph": true}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -785,7 +785,7 @@ func TestRequestEndToEnd(t *testing.T) {
 
 	// The human answers: approve consumes the request and the tool lands
 	// on the surface.
-	if err := app.EditApprovals(cfgPath, []string{"up__secret"}, true, io.Discard); err != nil {
+	if err := app.EditApprovals(ctx, cfgPath, []string{"up__secret"}, true, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	reloaded, _ = config.Load(cfgPath)
@@ -810,6 +810,42 @@ func TestRequestEndToEnd(t *testing.T) {
 	}
 }
 
+// Approving one tool must pin exactly that tool — never its siblings on
+// the same backend (regression: schemaPins once collected every tool a
+// candidate backend exposed, so approving fs__read approved fs__write too).
+func TestApprovePinsOnlyRequestedTool(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	up := fixtureUpstream(t)
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "toolhost.json")
+	cfg := &config.File{
+		Backends: map[string]*config.Backend{
+			"up": {Transport: "http", URL: up.URL},
+		},
+	}
+	if err := cfg.Save(cfgPath); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := app.EditApprovals(ctx, cfgPath, []string{"up__echo"}, true, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reloaded.IsApproved("up__echo") || reloaded.ApprovedSchemas["up__echo"] == "" {
+		t.Fatalf("up__echo should be approved+pinned: %+v / %+v", reloaded.Approved, reloaded.ApprovedSchemas)
+	}
+	for _, sib := range []string{"up__secret", "up__slow"} {
+		if reloaded.IsApproved(sib) || reloaded.ApprovedSchemas[sib] != "" {
+			t.Fatalf("%s must not be approved/pinned by a sibling approval", sib)
+		}
+	}
+}
+
 // serve --stdio: the same governed surface over a plain pipe. The test
 // drives it through IOTransport — identical newline-delimited JSON, no
 // subprocess needed.
@@ -831,7 +867,7 @@ func TestStdioServeEndToEnd(t *testing.T) {
 	}
 	defer func() { _ = ups[0].Close() }()
 
-	res, err := core.Resolve(ups, cfg.ApprovedSet(), nil)
+	res, err := core.Resolve(ups, cfg.ApprovedSet(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

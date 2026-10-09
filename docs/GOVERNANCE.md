@@ -12,8 +12,23 @@ The invariant: **`discovered ≠ approved ≠ enabled`**.
 - Invisible tools are **structurally uncallable** — never registered, so
   there is no check to bypass. `toolhost__call` on a non-enabled name
   audits `tool_forbidden` and returns a precise reason (unknown /
-  discovered-not-approved / approved-but-disabled).
+  discovered-not-approved / approved-but-disabled / schema-drifted).
 - `core.Resolve` is the only place visibility is decided.
+
+## Schema pinning
+
+`toolhost approve` binds the approval to the contract reviewed: it dials
+the owning backend, hashes each tool's schema, and stores the pin in
+`approved_schemas`. On every publish, `core.Resolve` re-hashes the live
+schema — a backend that silently changes a tool's contract sees the tool
+**drop off the surface** (approved-but-drifted), audited as
+`schema_drift`, until a human re-approves and pins the new contract.
+
+A drifted tool is not enabled, not listable, not callable — the agent's
+refusal message names the fix (`toolhost approve <name>`). Approvals
+written before 0.0.3 carry no pin and keep enforcing as before; a backend
+unreachable at approve time means the approval itself fails closed — you
+cannot approve a contract you cannot see.
 
 ## The `toolhost__*` control plane
 
@@ -55,10 +70,16 @@ Event: `{ts, kind, backend, tool, ms, err, remote}`.
 | `auth_failed` | bad/missing bearer on `/mcp`, with `remote` |
 | `tool_forbidden` | call to a non-enabled name |
 | `govern` | agent-initiated enable/disable/request |
-| `backend_error` | unreachable backend, skipped unsafe names |
+| `backend_error` | unreachable backend, skipped unsafe names, lost sessions |
+| `backend_up` | backend (re)connected — boot and reconnects |
+| `schema_drift` | an approved tool's live schema no longer matches its pin |
 | `reload` | config hot-swap; `err` set when a bad save was rejected |
 
 Humans query the file with any JSONL tool — e.g.
 `jq -c 'select(.kind=="tool_forbidden")'`. Agents read it through
 `toolhost__audit` (bounded tail, optional `kind` filter); the log never
 contains arguments or secrets, so exposing it is safe.
+
+The log rotates at `audit_max_mb` (default 10): the live file swaps to
+`audit_log.1` and a fresh segment opens — at most ~2× the cap on disk,
+always `0600`, and no write is ever dropped inside the retained window.

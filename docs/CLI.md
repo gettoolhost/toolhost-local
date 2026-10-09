@@ -24,7 +24,7 @@ toolhost version
 
 ```bash
 toolhost discover                      # full catalog: ✓ enabled, ○ approved-disabled, blank discovered
-toolhost approve fs__read_file ...     # add to approved; consumes matching requested entries
+toolhost approve fs__read_file ...     # add to approved; pins each tool's schema — drift lapses the approval
 toolhost revoke <names...>             # remove from approved (and thus the surface)
 toolhost enable <names...>             # allowlist-mode: put approved tools on the live surface
 toolhost enable                        # clear the allowlist — all approved enabled

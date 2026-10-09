@@ -23,6 +23,10 @@ type Server struct {
 	handler http.Handler
 	mcp     *mcp.Server
 	sink    core.AuditSink
+	// onCallErr reports a transport-level dispatch failure back to the
+	// gateway — HTTP sessions can stay logically alive after the wire
+	// dies, so call errors are a liveness signal too.
+	onCallErr func(up core.Upstream, err error)
 
 	mu   sync.Mutex // guards live — Reload runs on the watcher goroutine
 	live map[string]core.ResolvedTool
@@ -49,6 +53,9 @@ type Meta struct {
 	// Audit tails the audit log — the evidence trail of calls, denials, and
 	// governance actions — so agents can introspect without file access.
 	Audit func(ctx context.Context, limit int, kind string) ([]core.Event, error)
+	// CallErr reports a backend Call failure with the session that served
+	// it — the gateway uses it to retire dead sessions Wait() can't see.
+	CallErr func(up core.Upstream, err error)
 }
 
 // Options controls front-door serving. Stateless is the primary mode
@@ -104,6 +111,9 @@ func buildServer(res *core.Resolution, sink core.AuditSink, meta *Meta) *Server 
 		Tools: &mcp.ToolCapabilities{ListChanged: true},
 	}})
 	s := &Server{mcp: srv, sink: sink, live: map[string]core.ResolvedTool{}}
+	if meta != nil {
+		s.onCallErr = meta.CallErr
+	}
 	for _, rt := range res.Tools {
 		s.addTool(rt)
 	}
@@ -148,6 +158,9 @@ func (s *Server) addTool(rt core.ResolvedTool) {
 		}
 		if err != nil {
 			ev.Err = err.Error()
+			if s.onCallErr != nil {
+				s.onCallErr(rt.Upstream, err)
+			}
 		}
 		s.sink.Record(ev)
 		return result, err
@@ -260,6 +273,8 @@ func (s *Server) addMetaTools(m *Meta) {
 			s.sink.Record(core.Event{TS: time.Now(), Kind: core.EventToolForbidden, Tool: a.Name})
 			info, found := m.Status(a.Name)
 			switch {
+			case found && info.Drifted:
+				return errResult(fmt.Sprintf("%q's schema changed since approval — a human must re-approve: toolhost approve %s", a.Name, a.Name)), nil
 			case found && info.Approved:
 				return errResult(fmt.Sprintf("%q is approved but disabled — enable it with toolhost__enable", a.Name)), nil
 			case found:
@@ -279,6 +294,9 @@ func (s *Server) addMetaTools(m *Meta) {
 		}
 		if err != nil {
 			ev.Err = err.Error()
+			if s.onCallErr != nil {
+				s.onCallErr(rt.Upstream, err)
+			}
 		}
 		s.sink.Record(ev)
 		return result, err
@@ -363,7 +381,7 @@ func (s *Server) addMetaTools(m *Meta) {
 			"type": "object",
 			"properties": map[string]any{
 				"limit": map[string]any{"type": "integer", "description": "max events to return (default 50, cap 500)"},
-				"kind":  map[string]any{"type": "string", "description": `optional filter: tool_call, auth_failed, backend_error, tool_forbidden, govern, reload`},
+				"kind":  map[string]any{"type": "string", "description": `optional filter: tool_call, auth_failed, backend_error, backend_up, tool_forbidden, schema_drift, govern, reload`},
 			},
 		},
 	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {

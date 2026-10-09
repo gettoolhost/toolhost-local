@@ -94,6 +94,14 @@ type File struct {
 	// intersects with discovery. discovered ≠ approved: everything not on
 	// this list is invisible and uncallable.
 	Approved []string `json:"approved"`
+	// ApprovedSchemas binds an approval to the contract reviewed at
+	// approve time: qualified name → "sha256:…" of the tool's canonical
+	// input+output schema. If the upstream's schema changes, the approval
+	// lapses — the tool drops off the surface until a human re-approves
+	// (which pins the new schema). Approved names with no entry here are
+	// unbound: approvals made before schema binding keep working until
+	// re-approved.
+	ApprovedSchemas map[string]string `json:"approved_schemas,omitempty"`
 	// Enabled is the live-surface allowlist, third tier of the invariant:
 	// nil (absent) means every approved tool is enabled; a non-nil list
 	// means only enabled∩approved is visible. Pointer so "absent" and
@@ -111,6 +119,12 @@ type File struct {
 	// it (`toolhost status`) and approve consumes entries. Agents can
 	// write it; only humans turn requests into approvals.
 	Requested []Request `json:"requested,omitempty"`
+
+	// AuditMaxMB caps the audit log size in MiB — past it the log rotates
+	// to <audit_log>.1 (one generation kept; evidence is append-mostly and
+	// recent history is what introspection needs). Absent or non-positive
+	// means the default.
+	AuditMaxMB int `json:"audit_max_mb,omitempty"`
 }
 
 // Request is one agent-filed approval request.
@@ -123,6 +137,9 @@ type Request struct {
 const (
 	DefaultListen   = "127.0.0.1:8080"
 	DefaultAuditLog = "toolhost_audit.jsonl"
+
+	// DefaultAuditMaxMB is the audit log's rotation cap.
+	DefaultAuditMaxMB = 10
 
 	// ModeStateless is the default serving mode — sessionless Streamable
 	// HTTP. ModeStateful opts into session-bearing mode for older clients
@@ -189,6 +206,9 @@ func (f *File) applyDefaults() {
 	}
 	if f.CallTimeout == "" {
 		f.CallTimeout = DefaultCallTimeout
+	}
+	if f.AuditMaxMB <= 0 {
+		f.AuditMaxMB = DefaultAuditMaxMB
 	}
 	if f.Backends == nil {
 		f.Backends = map[string]*Backend{}
@@ -321,6 +341,14 @@ func (f *File) validate() error {
 	for _, q := range f.Approved {
 		if _, _, err := namespace.Split(q); err != nil {
 			return fmt.Errorf("approved name %q: %w", q, err)
+		}
+	}
+	for q, h := range f.ApprovedSchemas {
+		if _, _, err := namespace.Split(q); err != nil {
+			return fmt.Errorf("approved_schemas key %q: %w", q, err)
+		}
+		if !strings.HasPrefix(h, "sha256:") || len(h) != len("sha256:")+64 {
+			return fmt.Errorf("approved_schemas[%q]: want \"sha256:<64 hex>\", got %q", q, h)
 		}
 	}
 	if f.Enabled != nil {
@@ -552,20 +580,43 @@ func (f *File) RequestedSet() map[string]bool {
 	return set
 }
 
-// Approve adds qualified names; returns those actually added. Approved
-// names drop out of `requested` — the request has been answered.
-func (f *File) Approve(names ...string) ([]string, error) {
-	set := f.ApprovedSet()
-	var added []string
-	for _, n := range names {
+// Approve adds qualified names bound to their schema pins (name →
+// SchemaHash of the contract reviewed; "" = unbound). Returns the names
+// that changed: newly approved, or already-approved with a refreshed pin —
+// the latter is how a drifted schema gets re-affirmed, and it MUST count
+// as a change or the caller skips saving the pin. Approved names drop out
+// of `requested` — the request has been answered.
+func (f *File) Approve(pins map[string]string) ([]string, error) {
+	// Validate the whole batch first — a bad pin late in the map must not
+	// leave earlier names half-applied in memory.
+	for n, hash := range pins {
 		if _, _, err := namespace.Split(n); err != nil {
 			return nil, fmt.Errorf("%q is not a qualified name (want backend__tool): %w", n, err)
 		}
+		if hash != "" && (!strings.HasPrefix(hash, "sha256:") || len(hash) != len("sha256:")+64) {
+			return nil, fmt.Errorf("%q: schema pin must be \"sha256:<64 hex>\", got %q", n, hash)
+		}
+	}
+	set := f.ApprovedSet()
+	var added, changed []string
+	for n, hash := range pins {
+		changedHere := false
+		if hash != "" && f.ApprovedSchemas[n] != hash {
+			if f.ApprovedSchemas == nil {
+				f.ApprovedSchemas = map[string]string{}
+			}
+			f.ApprovedSchemas[n] = hash
+			changedHere = true
+		}
 		if set[n] {
+			if changedHere {
+				changed = append(changed, n)
+			}
 			continue
 		}
 		set[n] = true
 		added = append(added, n)
+		changed = append(changed, n)
 	}
 	if len(added) > 0 {
 		f.Approved = append(f.Approved, added...)
@@ -581,10 +632,12 @@ func (f *File) Approve(names ...string) ([]string, error) {
 		}
 		f.Requested = kept
 	}
-	return added, nil
+	sort.Strings(changed)
+	return changed, nil
 }
 
-// Revoke removes qualified names; returns those actually removed.
+// Revoke removes qualified names and their schema pins; returns those
+// actually removed.
 func (f *File) Revoke(names ...string) []string {
 	set := f.ApprovedSet()
 	removed := map[string]bool{}
@@ -593,6 +646,7 @@ func (f *File) Revoke(names ...string) []string {
 			delete(set, n)
 			removed[n] = true
 		}
+		delete(f.ApprovedSchemas, n)
 	}
 	if len(removed) == 0 {
 		return nil

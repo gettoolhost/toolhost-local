@@ -156,6 +156,13 @@ func (b *Backend) Close() error {
 	return b.session.Close()
 }
 
+// Wait blocks until the upstream session ends — the liveness signal the
+// gateway's reconnect loop consumes. A backend that dies mid-session is
+// detected here, not only at the next config reload.
+func (b *Backend) Wait() error {
+	return b.session.Wait()
+}
+
 var _ core.Upstream = (*Backend)(nil)
 
 func transportFor(ctx context.Context, name string, cfg *config.Backend, opts *Options) (mcp.Transport, error) {

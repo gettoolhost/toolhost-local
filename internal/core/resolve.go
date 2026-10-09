@@ -1,6 +1,9 @@
 package core
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -24,15 +27,20 @@ type ResolvedTool struct {
 // SkippedTool is a discovered tool that cannot be exposed — with the reason.
 // Skipping is per-tool: one bad upstream name must never darken a backend.
 type SkippedTool struct {
-	Backend string
-	Tool    string
-	Reason  string
+	Backend   string
+	Tool      string
+	Qualified string
+	Reason    string
 }
 
 // Resolution is the output of the one place visibility is decided.
 type Resolution struct {
 	Tools   []ResolvedTool // qualified-name sorted
 	Skipped []SkippedTool
+	// Drifted holds approved tools whose schema no longer matches the hash
+	// recorded at approve time — approval is bound to the contract that was
+	// reviewed, so drift lapses it until a human re-approves.
+	Drifted []SkippedTool
 }
 
 // Passthrough marks an upstream whose tool names are already qualified —
@@ -59,15 +67,42 @@ func Qualify(up Upstream, name string) (string, error) {
 	return namespace.Join(up.Namespace(), name)
 }
 
+// SchemaHash fingerprints the contract a tool is approved against: input
+// and output schemas as canonical JSON. The unmarshal/remarshal round-trip
+// normalizes whitespace and map order, so transport formatting can't
+// false-positive as drift — only a real schema change lapses an approval.
+func SchemaHash(t *mcp.Tool) string {
+	canon := func(v any) any {
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return v
+		}
+		var out any
+		if json.Unmarshal(raw, &out) != nil {
+			return v
+		}
+		return out
+	}
+	raw, _ := json.Marshal(map[string]any{"input": canon(t.InputSchema), "output": canon(t.OutputSchema)})
+	sum := sha256.Sum256(raw)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
 // Resolve answers "what can be seen and called" — the ONLY place that
 // question is answered. A tool is exposed iff it is discovered AND approved
 // AND enabled: discovered ≠ approved ≠ enabled. A nil enabled set means
 // "no allowlist configured" — every approved tool is enabled. A non-nil
 // enabled set intersects: the live surface is enabled ∩ approved.
 //
+// schemas binds approvals to the contract reviewed at approve time:
+// qualified name → SchemaHash. An approved tool whose hash mismatches is
+// drifted — it drops off the surface (audited) until re-approved. An
+// approved name with no recorded hash is unbound (pre-binding approvals)
+// and enforced as before.
+//
 // A duplicate qualified name is a hard error: two upstreams claiming one
 // wire name is a routing ambiguity, and ambiguity denies.
-func Resolve(upstreams []Upstream, approved, enabled map[string]bool) (*Resolution, error) {
+func Resolve(upstreams []Upstream, approved, enabled map[string]bool, schemas map[string]string) (*Resolution, error) {
 	res := &Resolution{}
 	seen := map[string]string{}
 	for _, up := range upstreams {
@@ -75,7 +110,7 @@ func Resolve(upstreams []Upstream, approved, enabled map[string]bool) (*Resoluti
 			qualified, err := Qualify(up, tool.Name)
 			if err != nil {
 				res.Skipped = append(res.Skipped, SkippedTool{
-					Backend: up.Namespace(), Tool: tool.Name, Reason: err.Error(),
+					Backend: up.Namespace(), Tool: tool.Name, Qualified: qualified, Reason: err.Error(),
 				})
 				continue
 			}
@@ -85,6 +120,13 @@ func Resolve(upstreams []Upstream, approved, enabled map[string]bool) (*Resoluti
 			}
 			seen[qualified] = up.Namespace()
 			if !approved[qualified] {
+				continue
+			}
+			if want := schemas[qualified]; want != "" && want != SchemaHash(tool) {
+				res.Drifted = append(res.Drifted, SkippedTool{
+					Backend: up.Namespace(), Tool: tool.Name, Qualified: qualified,
+					Reason: "schema changed since approval — re-approve to pin the new contract",
+				})
 				continue
 			}
 			if enabled != nil && !enabled[qualified] {

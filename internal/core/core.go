@@ -16,7 +16,7 @@ import (
 
 // Version is the single source for what the binary reports to MCP clients.
 // Release builds stamp it: -ldflags "-X .../internal/core.Version=vX.Y.Z".
-var Version = "0.0.2"
+var Version = "0.0.3"
 
 // Upstream is one connected backend MCP server — the driven port every
 // backend adapter implements.
@@ -41,6 +41,10 @@ type ToolInfo struct {
 	// Requested marks an agent-filed approval request still waiting on a
 	// human — visible so the agent knows it already asked.
 	Requested bool `json:"requested,omitempty"`
+	// Drifted marks an approved tool whose upstream schema no longer
+	// matches the schema hash recorded at approve time — the approval
+	// lapsed; re-approving pins the new schema.
+	Drifted bool `json:"drifted,omitempty"`
 }
 
 // Event is one governed action's evidence — the driven audit port.
@@ -65,7 +69,9 @@ const (
 	EventToolCall      = "tool_call"
 	EventAuthFailed    = "auth_failed"
 	EventBackendError  = "backend_error"
+	EventBackendUp     = "backend_up"
 	EventToolForbidden = "tool_forbidden"
+	EventSchemaDrift   = "schema_drift"
 	EventReload        = "reload"
 	EventGovern        = "govern"
 )

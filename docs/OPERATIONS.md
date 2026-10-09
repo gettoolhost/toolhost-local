@@ -41,8 +41,23 @@ tail -f toolhost_audit.jsonl
 ```
 
 Status shows: mode, listen, per-backend up/down + transport + tool count,
-enabled/approved totals, pending agent requests, and (in the fallback)
-which oauth backends hold stored grants.
+enabled/approved totals, pending agent requests, schema-drifted tools
+awaiting re-approval, and (in the fallback) which oauth backends hold
+stored grants.
+
+## Backend reconnect
+
+A backend that fails to connect at boot — or whose session dies later —
+is retried automatically with exponential backoff (2s doubling to a 5m
+cap, ±25% jitter). Reconnects never block the control plane: dials run
+outside the live-set lock, and a config reload that lands mid-dial wins
+the slot. Death signals carry the session identity, so a stale signal
+can't kill a replacement session. A failed tool call is also a liveness
+signal — an HTTP session can look alive after the wire dies, so a
+transport-level `Call` error retires the session (caller-side timeouts
+and cancellations don't). Removing the backend from config stops its
+retries. Every drop and reconnect is audited (`backend_error` /
+`backend_up`) and `toolhost status` shows the backend `down` meanwhile.
 
 ## Change it live
 

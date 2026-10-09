@@ -75,7 +75,7 @@ flowchart LR
 ## Decisions that are load-bearing
 
 - **MCP types in the core:** `*mcp.Tool`, `json.RawMessage`, and `*mcp.CallToolResult` are the gateway's domain vocabulary; translation would duplicate the protocol model.
-- **One resolver:** `core.Resolve` intersects discovery, approval, and enablement; registering only its output makes invisible tools uncallable.
+- **One resolver:** `core.Resolve` intersects discovery, approval, and enablement; registering only its output makes invisible tools uncallable. A fourth input — `approved_schemas` pins — drops approved tools whose live schema drifted from the contract reviewed.
 - **`__` namespacing:** `backend__tool` fits MCP client tool-name constraints; `::`, `.`, and `/` do not.
 - **File-backed policy:** `approved`, `enabled`, and `requested` live in `toolhost.json`; atomic saves and a ~1.5s watcher let `Reload` swap the live surface without a database.
 - **Stateless default:** independent Streamable HTTP requests need no `Mcp-Session-Id`; 2026-07-28 clients can subscribe to list changes, while stateful mode serves older clients that need held sessions.
@@ -85,6 +85,7 @@ flowchart LR
 - **Stdio front door:** `serve --stdio` reuses the governed surface for spawn-only clients; the owning process replaces bearer authentication.
 - **User service:** `install` uses launchd or systemd user units; it needs neither root nor a separate daemon.
 - **Ambiguity denies:** bad names skip, duplicate qualified names error, and unreachable backends contribute zero tools.
+- **Reconnecting pool:** dead or unreachable backends retry on exponential backoff (2s→5m, jittered) without holding the live-set lock during dials; session-death signals carry upstream identity so stale sessions can't kill their replacements, and a config change mid-dial closes the stale result unclaimed.
 - **Separated auth:** downstream uses one constant-time-checked bearer token; upstream auth is per backend, with OAuth grants stored outside config.
 - **Secret references:** `env:NAME` stays literal in saved config and resolves at the boundary; missing or empty variables fail closed.
 - **Least-privilege env:** stdio backends get a baseline + explicitly named vars (`env`, `env_allowlist`); `env_inherit` is the opt-out — a subprocess never sees the gateway's whole environment by default.

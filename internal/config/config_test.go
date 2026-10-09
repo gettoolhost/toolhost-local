@@ -239,11 +239,32 @@ func TestRequestTools(t *testing.T) {
 	}
 
 	// Approve consumes the request — the ask is answered.
-	if _, err := f.Approve("b__want"); err != nil {
+	pin := "sha256:" + strings.Repeat("0", 64)
+	if _, err := f.Approve(map[string]string{"b__want": pin}); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.Requested) != 0 || !f.IsApproved("b__want") {
 		t.Fatalf("approve should consume the request: %+v", f.Requested)
+	}
+	if f.ApprovedSchemas["b__want"] != pin {
+		t.Fatalf("approve should pin the reviewed schema: %+v", f.ApprovedSchemas)
+	}
+	// A malformed pin refuses — it would poison validation on next load.
+	if _, err := f.Approve(map[string]string{"b__x": "notahash"}); err == nil {
+		t.Fatal("bad pin accepted")
+	}
+	// Re-approving a drifted tool re-pins: same name, new hash.
+	pin2 := "sha256:" + strings.Repeat("1", 64)
+	if _, err := f.Approve(map[string]string{"b__want": pin2}); err != nil {
+		t.Fatal(err)
+	}
+	if f.ApprovedSchemas["b__want"] != pin2 {
+		t.Fatal("re-approve should refresh the pin")
+	}
+	// Revoke clears the pin with the name.
+	f.Revoke("b__want")
+	if _, ok := f.ApprovedSchemas["b__want"]; ok {
+		t.Fatal("revoke left a stale schema pin")
 	}
 }
 
