@@ -298,6 +298,11 @@ func (f *File) validate() error {
 			return fmt.Errorf("call_timeout: %w", err)
 		}
 	}
+	// Bound the rotation cap — int64(AuditMaxMB)<<20 overflows into a
+	// negative maxBytes on absurd values, silently disabling rotation.
+	if f.AuditMaxMB > 1<<20 {
+		return fmt.Errorf("audit_max_mb %d exceeds the 1 TiB cap", f.AuditMaxMB)
+	}
 	for name, b := range f.Backends {
 		if name == "toolhost" {
 			return fmt.Errorf("backend name %q is reserved for the gateway's own tools", name)

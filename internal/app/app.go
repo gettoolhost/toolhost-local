@@ -541,6 +541,11 @@ func Serve(ctx context.Context, path string, w io.Writer, stdio bool) error {
 	if !filepath.IsAbs(auditLog) {
 		auditLog = filepath.Join(filepath.Dir(path), auditLog)
 	}
+	// Create the log's directory — a relative audit_log under a fresh
+	// config dir must not fail the boot.
+	if err := os.MkdirAll(filepath.Dir(auditLog), 0o700); err != nil {
+		return fmt.Errorf("audit log dir: %w", err)
+	}
 	sink, err := audit.Open(auditLog, int64(f.AuditMaxMB)<<20)
 	if err != nil {
 		return err
@@ -1041,13 +1046,15 @@ func (l *liveSet) retrySweep() {
 	}
 }
 
-// signalDeath queues a session-death signal for the watch loop. The
-// gateway-lifetime context releases the send — a request-scoped ctx would
-// strand signals the moment the triggering request finished.
+// signalDeath queues a session-death signal for the watch loop.
 func (l *liveSet) signalDeath(sig deadSig) {
+	// Non-blocking — a flapping session emits one signal per failing call
+	// and the channel drains only between retrySweep dials; Call handlers
+	// must never stall on reconnect latency. A dropped signal self-heals:
+	// the session is still dead, and the next call error re-signals.
 	select {
 	case l.dead <- sig:
-	case <-l.ctx.Done():
+	default:
 	}
 }
 
@@ -1320,10 +1327,14 @@ func auditTail(path string, limit int, kind string) ([]core.Event, error) {
 	lines = append(lines, prev...)
 	cur, err := tailLines(path)
 	if err != nil {
-		if os.IsNotExist(err) && len(lines) == 0 {
+		if !os.IsNotExist(err) {
+			return nil, err
+		}
+		// Live segment deleted but the rotated .1 remains — return its
+		// history rather than erroring out of toolhost__audit.
+		if len(lines) == 0 {
 			return nil, nil
 		}
-		return nil, err
 	}
 	lines = append(lines, cur...)
 

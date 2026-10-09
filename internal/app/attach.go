@@ -60,12 +60,14 @@ func Attach(cfgPath, client string, stdio, printOnly, dryRun bool, w io.Writer) 
 		return fmt.Errorf("unknown client %q — known: %s, or use --print for the JSON", client, attachTargetNames())
 	}
 	if t.cli != nil {
+		argv := t.cli(url, token, bin, abs, stdio)
 		if dryRun {
-			fmt.Fprintf(w, "would run: %s\n", strings.Join(t.cli(url, token, bin, abs, stdio), " "))
+			fmt.Fprintf(w, "would run: %s\n", strings.Join(redactToken(argv, token), " "))
 			return nil
 		}
-		argv := t.cli(url, token, bin, abs, stdio)
-		fmt.Fprintf(w, "running: %s\n", strings.Join(argv, " "))
+		// Echo with the bearer redacted — argv carries the token for exec;
+		// scrollback shouldn't.
+		fmt.Fprintf(w, "running: %s\n", strings.Join(redactToken(argv, token), " "))
 		cmd := exec.Command(argv[0], argv[1:]...)
 		cmd.Stdout, cmd.Stderr = w, w
 		return cmd.Run()
@@ -420,6 +422,21 @@ func commitMCPServerEntry(p *mergePlan) error {
 		return err
 	}
 	return os.Rename(tmp, p.path)
+}
+
+// redactToken masks the gateway bearer in a copy of argv for display.
+// Empty token (stdio attach) is a no-op — ReplaceAll on "" would corrupt
+// every argument.
+func redactToken(argv []string, token string) []string {
+	out := make([]string, len(argv))
+	for i, a := range argv {
+		if token != "" {
+			out[i] = strings.ReplaceAll(a, token, "***")
+		} else {
+			out[i] = a
+		}
+	}
+	return out
 }
 
 func devinArgs(url, token, bin, cfg string, stdio bool) []string {

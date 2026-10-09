@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -303,6 +304,34 @@ func TestCallErrorDeathSignal(t *testing.T) {
 	case sig := <-live.dead:
 		t.Fatalf("stale session's error signaled death: %+v", sig)
 	default:
+	}
+}
+
+// If the live log is deleted but <path>.1 survives, toolhost__audit still
+// returns the retained history — the rotated segment isn't lost evidence.
+func TestAuditTailSurvivesLiveDeletion(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "audit.jsonl")
+	s, err := audit.Open(path, 300)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 12; i++ {
+		s.Record(core.Event{TS: time.Now(), Kind: core.EventToolCall, Tool: "a__x"})
+	}
+	s.Close()
+	if _, err := os.Stat(path + ".1"); err != nil {
+		t.Skip("rotation didn't happen — cap accounting changed")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	events, err := auditTail(path, 50, "")
+	if err != nil {
+		t.Fatalf("auditTail must read .1 when the live file is gone: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatal("rotated generation returned no events")
 	}
 }
 

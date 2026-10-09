@@ -63,12 +63,22 @@ func Doctor(ctx context.Context, cfgPath string, w io.Writer) error {
 		}
 	}
 
-	// Audit log's directory must be creatable/writable.
-	auditDir := filepath.Dir(f.AuditLog)
-	if err := os.MkdirAll(auditDir, 0o700); err != nil {
+	// Audit log's directory must be writable — anchored to the config
+	// dir, exactly as serve resolves it. Probes with a temp file rather
+	// than mkdir: a diagnostic shouldn't mutate the filesystem.
+	auditPath := f.AuditLog
+	if !filepath.IsAbs(auditPath) {
+		auditPath = filepath.Join(filepath.Dir(cfgPath), auditPath)
+	}
+	auditDir := filepath.Dir(auditPath)
+	if fi, err := os.Stat(auditDir); err != nil || !fi.IsDir() {
+		fmt.Fprintf(w, "- audit dir %s absent — serve will create it\n", auditDir)
+	} else if probe, err := os.CreateTemp(auditDir, ".doctor-*"); err != nil {
 		fmt.Fprintf(w, "✗ audit dir %s: %v\n", auditDir, err)
 		failed++
 	} else {
+		probe.Close()
+		os.Remove(probe.Name())
 		fmt.Fprintf(w, "✓ audit log dir %s writable\n", auditDir)
 	}
 
