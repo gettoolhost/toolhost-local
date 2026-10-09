@@ -358,3 +358,20 @@ func TestEnvValuesResolveRefs(t *testing.T) {
 		t.Fatal("unset env: reference in env value should fail validation")
 	}
 }
+
+// audit_max_mb is bounded — int64(AuditMaxMB)<<20 must never overflow into
+// a negative cap (which would silently disable rotation).
+func TestAuditMaxMBBound(t *testing.T) {
+	for _, mb := range []int{1, 1024, 1 << 20} {
+		f := &File{Mode: ModeStateless, AuditMaxMB: mb}
+		if err := f.validate(); err != nil {
+			t.Fatalf("audit_max_mb %d should validate: %v", mb, err)
+		}
+	}
+	for _, mb := range []int{1<<20 + 1, 1 << 40} {
+		f := &File{Mode: ModeStateless, AuditMaxMB: mb}
+		if err := f.validate(); err == nil {
+			t.Fatalf("audit_max_mb %d should fail validation", mb)
+		}
+	}
+}

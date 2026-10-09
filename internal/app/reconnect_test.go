@@ -307,6 +307,29 @@ func TestCallErrorDeathSignal(t *testing.T) {
 	}
 }
 
+// A full dead channel must never stall Call handlers — a flapping session
+// emits one signal per failing call while retrySweep sits inside a dial.
+// Dropped signals are safe: the backend stays dead and the next failing
+// call re-signals.
+func TestSignalDeathNeverBlocks(t *testing.T) {
+	live, _, _ := testLive(t)
+	for i := 0; i < cap(live.dead); i++ {
+		live.dead <- deadSig{name: "a"}
+	}
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 64; i++ {
+			live.signalDeath(deadSig{name: "a", err: errors.New("still down")})
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("signalDeath blocked on a full dead channel")
+	}
+}
+
 // If the live log is deleted but <path>.1 survives, toolhost__audit still
 // returns the retained history — the rotated segment isn't lost evidence.
 func TestAuditTailSurvivesLiveDeletion(t *testing.T) {

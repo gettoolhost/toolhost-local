@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -348,5 +349,29 @@ func TestHostPort(t *testing.T) {
 		if got := hostPort(in); got != want {
 			t.Fatalf("hostPort(%q): want %q, got %q", in, want, got)
 		}
+	}
+}
+
+// The echoed argv (running:/would run:) must never carry the bearer —
+// exec gets the real token, scrollback gets ***.
+func TestRedactToken(t *testing.T) {
+	argv := devinArgs("http://gw:8080/mcp", "sekrit", "toolhost", "/c.json", false)
+	got := redactToken(argv, "sekrit")
+	for _, a := range got {
+		if strings.Contains(a, "sekrit") {
+			t.Fatalf("token leaked into display argv: %q", a)
+		}
+	}
+	if !strings.Contains(strings.Join(got, " "), "Bearer ***") {
+		t.Fatalf("expected redacted bearer, got %v", got)
+	}
+	// argv itself is untouched — exec still receives the real token.
+	if !strings.Contains(argv[len(argv)-1], "sekrit") {
+		t.Fatal("redactToken mutated the exec argv")
+	}
+	// Empty token (stdio attach) is a no-op, not a corruption.
+	argv = devinArgs("", "", "toolhost", "/c.json", true)
+	if got := redactToken(argv, ""); !reflect.DeepEqual(got, argv) {
+		t.Fatalf("empty token must pass argv through: %v", got)
 	}
 }

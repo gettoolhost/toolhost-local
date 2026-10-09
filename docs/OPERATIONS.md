@@ -108,10 +108,16 @@ GoReleaser builds the archives plus a `ghcr.io/gettoolhost/toolhost` OCI
 image, pushes a Homebrew cask to `gettoolhost/homebrew-tap`, publishes
 `server.json` to the MCP registry, and creates a **draft** GitHub
 release. CI then signs `checksums.txt` with cosign keyless
-(`checksums.txt.sigstore.json`), attests build provenance on every
-release artifact (`gh attestation verify`), re-verifies every checksum,
-and only then un-drafts — the user-facing release stays private until
-the artifacts check out.
+(`checksums.txt.sigstore.json`), attests build provenance for every
+release artifact, re-downloads the artifacts, re-verifies every
+checksum, and only then un-drafts.
+
+Note what the draft gates: the ghcr image, Homebrew cask, and MCP
+registry entry publish inside the GoReleaser step, before the checksum
+re-verification runs. Only the GitHub release page is held back — a
+failed verify leaves a draft release plus already-published external
+artifacts to clean up. The signature and attestation are for consumers
+to verify:
 
 ```bash
 gh attestation verify toolhost_darwin_arm64.tar.gz -R gettoolhost/toolhost-local
