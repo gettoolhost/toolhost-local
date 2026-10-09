@@ -6,7 +6,7 @@
 brew install gettoolhost/tap/toolhost      # or: go install github.com/gettoolhost/toolhost-local/cmd/toolhost@latest
 toolhost init                              # writes ~/.config/toolhost/toolhost.json (or ./toolhost.json via -c)
 toolhost doctor                            # verify: config, token, port, backends, grants, service
-toolhost attach <client>                   # register with your agent: claude · devin · cursor · windsurf
+toolhost attach <client>                   # register with your agent: claude · devin · cursor · windsurf · vscode · gemini
 toolhost install                           # persist as a user service (launchd / systemd --user)
 ```
 
@@ -100,3 +100,30 @@ retries. Every drop and reconnect is audited (`backend_error` /
 and restart the process / reinstall the service. Config format is
 additive; `mode`/`call_timeout` default when absent. Releases are
 `v0.0.x` patch bumps — breaking changes land only between minor series.
+
+## Release trust chain
+
+Tag `v0.0.x` and push — `.github/workflows/release.yml` does the rest:
+GoReleaser builds the archives plus a `ghcr.io/gettoolhost/toolhost` OCI
+image, pushes a Homebrew cask to `gettoolhost/homebrew-tap`, publishes
+`server.json` to the MCP registry, and creates a **draft** GitHub
+release. CI then signs `checksums.txt` with cosign keyless
+(`checksums.txt.sigstore.json`), attests build provenance on every
+release artifact (`gh attestation verify`), re-verifies every checksum,
+and only then un-drafts — the user-facing release stays private until
+the artifacts check out.
+
+```bash
+gh attestation verify toolhost_darwin_arm64.tar.gz -R gettoolhost/toolhost-local
+cosign verify-blob --bundle checksums.txt.sigstore.json \
+  --certificate-identity-regexp 'https://github.com/gettoolhost/toolhost-local/.github/workflows/release.yml@.*' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  checksums.txt
+```
+
+OpenSSF Scorecard runs on every push to main and weekly.
+
+The tap push needs a credential that can write both repos: set a
+`TAP_GITHUB_TOKEN` Actions secret (PAT or GitHub App token with repo
+scope on `toolhost-local` and `homebrew-tap`). Without it the workflow
+falls back to `GITHUB_TOKEN` and the cask push fails.

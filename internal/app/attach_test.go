@@ -38,20 +38,15 @@ func TestServerEntry(t *testing.T) {
 	}
 }
 
-func TestMergeMCPServerEntry(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "mcp.json")
-
-	// Existing config keeps other servers and unrelated keys.
-	existing := `{"mcpServers": {"other": {"url": "http://x"}}, "theme": "dark"}`
-	if err := os.WriteFile(path, []byte(existing), 0o600); err != nil {
+func writeJSON(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	entry := serverEntry("http://127.0.0.1:8188/mcp", "th_k", "", "", "url", false)
-	if err := mergeMCPServerEntry(path, entry); err != nil {
-		t.Fatal(err)
-	}
+}
 
+func readDoc(t *testing.T, path string) map[string]any {
+	t.Helper()
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -60,17 +55,183 @@ func TestMergeMCPServerEntry(t *testing.T) {
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		t.Fatal(err)
 	}
+	return doc
+}
+
+func TestPlanMergeEntry(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mcp.json")
+
+	// Existing config keeps other servers and unrelated keys.
+	writeJSON(t, path, `{"mcpServers": {"other": {"url": "http://x"}}, "theme": "dark"}`)
+	entry := serverEntry("http://127.0.0.1:8188/mcp", "th_k", "", "", "url", false)
+	p, err := planMCPServerEntry(path, "mcpServers", entry, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.action != planCreate {
+		t.Fatalf("want create, got %s", p.action)
+	}
+	if err := commitMCPServerEntry(p); err != nil {
+		t.Fatal(err)
+	}
+	doc := readDoc(t, path)
 	servers := doc["mcpServers"].(map[string]any)
 	if servers["other"] == nil || servers["toolhost"] == nil {
-		t.Fatalf("merge lost entries: %s", raw)
+		t.Fatalf("merge lost entries: %v", servers)
 	}
 	if doc["theme"] != "dark" {
-		t.Fatalf("merge dropped an unrelated key: %s", raw)
+		t.Fatal("merge dropped an unrelated key")
 	}
 
-	// Fresh file: created with 0600 — the entry carries a bearer token.
-	fresh := filepath.Join(dir, "sub", "mcp.json")
-	if err := mergeMCPServerEntry(fresh, entry); err != nil {
+	// Identical re-attach is a no-op — no write, no churn.
+	p2, err := planMCPServerEntry(path, "mcpServers", entry, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p2.action != planSkip {
+		t.Fatalf("re-attach should be a no-op, got %s", p2.action)
+	}
+
+	// A stale entry of ours updates in place and keeps client-added keys.
+	writeJSON(t, path, `{"mcpServers": {"toolhost": {"url": "http://old/mcp", "headers": {"Authorization": "Bearer old"}, "disabled": true}}}`)
+	fresh := serverEntry("http://127.0.0.1:9999/mcp", "th_new", "", "", "url", false)
+	p3, err := planMCPServerEntry(path, "mcpServers", fresh, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p3.action != planUpdate {
+		t.Fatalf("want update, got %s", p3.action)
+	}
+	if err := commitMCPServerEntry(p3); err != nil {
+		t.Fatal(err)
+	}
+	got := readDoc(t, path)["mcpServers"].(map[string]any)["toolhost"].(map[string]any)
+	if got["url"] != "http://127.0.0.1:9999/mcp" || got["disabled"] != true {
+		t.Fatalf("update must refresh ours and keep extras: %v", got)
+	}
+}
+
+func TestPlanForeignEntryRefused(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mcp.json")
+	// A "toolhost" entry that isn't ours — no bearer + endpoint, no
+	// serve --stdio spawn. Overwriting would destroy someone's config.
+	writeJSON(t, path, `{"mcpServers": {"toolhost": {"command": "/opt/other/toolhostd"}}}`)
+	entry := serverEntry("http://127.0.0.1:8188/mcp", "th_k", "", "", "url", false)
+	if _, err := planMCPServerEntry(path, "mcpServers", entry, false); err == nil {
+		t.Fatal("a foreign toolhost entry must be refused, not clobbered")
+	}
+}
+
+func TestPlanConditionalAbsent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "never-created.json")
+	p, err := planMCPServerEntry(path, "mcpServers", serverEntry("http://x/mcp", "t", "", "", "url", false), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.action != planAbsent {
+		t.Fatalf("conditional target with no file must skip, got %s", p.action)
+	}
+	// Unconditional targets still create the file.
+	p2, err := planMCPServerEntry(path, "mcpServers", serverEntry("http://x/mcp", "t", "", "", "url", false), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p2.action != planCreate {
+		t.Fatalf("unconditional target should create, got %s", p2.action)
+	}
+}
+
+func TestCommitCASConflict(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mcp.json")
+	writeJSON(t, path, `{"mcpServers": {}}`)
+	p, err := planMCPServerEntry(path, "mcpServers", serverEntry("http://x/mcp", "t", "", "", "url", false), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Someone else writes between plan and commit — refuse, don't lose it.
+	writeJSON(t, path, `{"mcpServers": {"theirs": {"url": "http://y"}}}`)
+	if err := commitMCPServerEntry(p); err == nil {
+		t.Fatal("commit must refuse when the file changed under us")
+	}
+	doc := readDoc(t, path)
+	if doc["mcpServers"].(map[string]any)["theirs"] == nil {
+		t.Fatal("lost-update: their write was clobbered")
+	}
+}
+
+// Switching transports must not leave a hybrid entry — a stdio attach
+// followed by an http attach would otherwise keep `command`/`args` beside
+// `url`/`headers`, which clients read as stdio.
+func TestPlanTransportSwitchDropsStaleKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mcp.json")
+	writeJSON(t, path, `{"mcpServers": {"toolhost": {"command": "/old/toolhost", "args": ["serve", "--stdio", "-c", "/c.json"], "disabled": true}}}`)
+	http := serverEntry("http://127.0.0.1:8188/mcp", "th_k", "", "", "url", false)
+	p, err := planMCPServerEntry(path, "mcpServers", http, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.action != planUpdate {
+		t.Fatalf("want update, got %s", p.action)
+	}
+	if err := commitMCPServerEntry(p); err != nil {
+		t.Fatal(err)
+	}
+	got := readDoc(t, path)["mcpServers"].(map[string]any)["toolhost"].(map[string]any)
+	for _, stale := range []string{"command", "args"} {
+		if got[stale] != nil {
+			t.Fatalf("transport switch left stale %q: %v", stale, got)
+		}
+	}
+	if got["url"] != "http://127.0.0.1:8188/mcp" || got["disabled"] != true {
+		t.Fatalf("update must write ours and keep extras: %v", got)
+	}
+
+	// And the reverse — http → stdio drops url/headers.
+	writeJSON(t, path, `{"mcpServers": {"toolhost": {"type": "http", "url": "http://x/mcp", "headers": {"Authorization": "Bearer t"}}}}`)
+	sp := serverEntry("", "", "/b/toolhost", "/c.json", "url", true)
+	p2, err := planMCPServerEntry(path, "mcpServers", sp, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := commitMCPServerEntry(p2); err != nil {
+		t.Fatal(err)
+	}
+	got = readDoc(t, path)["mcpServers"].(map[string]any)["toolhost"].(map[string]any)
+	for _, stale := range []string{"url", "headers"} {
+		if got[stale] != nil {
+			t.Fatalf("http→stdio left stale %q: %v", stale, got)
+		}
+	}
+	if got["command"] != "/b/toolhost" {
+		t.Fatalf("stdio entry missing command: %v", got)
+	}
+}
+
+// A file appearing between plan and commit (where none existed) is a CAS
+// conflict — empty content is still someone else's write.
+func TestCommitRefusesAppearedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mcp.json")
+	p, err := planMCPServerEntry(path, "mcpServers", serverEntry("http://x/mcp", "t", "", "", "url", false), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeJSON(t, path, "") // appeared, empty
+	if err := commitMCPServerEntry(p); err == nil {
+		t.Fatal("commit must refuse a file that appeared mid-attach")
+	}
+}
+
+func TestPlanNewFilePerms(t *testing.T) {
+	fresh := filepath.Join(t.TempDir(), "sub", "mcp.json")
+	entry := serverEntry("http://127.0.0.1:8188/mcp", "th_k", "", "", "url", false)
+	p, err := planMCPServerEntry(fresh, "mcpServers", entry, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := commitMCPServerEntry(p); err != nil {
 		t.Fatal(err)
 	}
 	fi, err := os.Stat(fresh)
@@ -80,14 +241,101 @@ func TestMergeMCPServerEntry(t *testing.T) {
 	if fi.Mode().Perm() != 0o600 {
 		t.Fatalf("client config with a token must be 0600, got %o", fi.Mode().Perm())
 	}
+}
 
-	// Corrupt existing config fails closed — never clobber.
-	bad := filepath.Join(dir, "broken.json")
-	if err := os.WriteFile(bad, []byte("{nope"), 0o600); err != nil {
+func TestPlanCorruptFailsClosed(t *testing.T) {
+	bad := filepath.Join(t.TempDir(), "broken.json")
+	writeJSON(t, bad, "{nope")
+	if _, err := planMCPServerEntry(bad, "mcpServers", serverEntry("http://x/mcp", "t", "", "", "url", false), false); err == nil {
+		t.Fatal("corrupt client config should fail, not be overwritten")
+	}
+}
+
+// A config file containing the literal "null" is valid JSON that
+// unmarshals into a nil map — it must be treated as empty, not panic.
+func TestPlanNullConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "null.json")
+	writeJSON(t, path, "null")
+	p, err := planMCPServerEntry(path, "mcpServers", serverEntry("http://x/mcp", "t", "", "", "url", false), false)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := mergeMCPServerEntry(bad, entry); err == nil {
-		t.Fatal("corrupt client config should fail, not be overwritten")
+	if p.action != planCreate {
+		t.Fatalf("null config should plan a create, got %s", p.action)
+	}
+}
+
+// A "toolhost" key that isn't an object is foreign data — refuse, never
+// silently overwrite it.
+func TestPlanNonObjectToolhostRefused(t *testing.T) {
+	for _, body := range []string{
+		`{"mcpServers": {"toolhost": "http://someone-else"}}`,
+		`{"mcpServers": {"toolhost": false}}`,
+		`{"mcpServers": {"toolhost": ["x"]}}`,
+	} {
+		path := filepath.Join(t.TempDir(), "mcp.json")
+		writeJSON(t, path, body)
+		if _, err := planMCPServerEntry(path, "mcpServers", serverEntry("http://x/mcp", "t", "", "", "url", false), false); err == nil {
+			t.Fatalf("non-object toolhost entry must be refused: %s", body)
+		}
+	}
+}
+
+// A non-object mcpServers key is malformed client config — refuse rather
+// than replace the value.
+func TestPlanNonObjectTopKeyRefused(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mcp.json")
+	writeJSON(t, path, `{"mcpServers": "everything"}`)
+	if _, err := planMCPServerEntry(path, "mcpServers", serverEntry("http://x/mcp", "t", "", "", "url", false), false); err == nil {
+		t.Fatal("non-object mcpServers must be refused")
+	}
+}
+
+// A symlinked config must be written through the link — renaming over
+// the link would sever it.
+func TestPlanWritesThroughSymlink(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real.json")
+	link := filepath.Join(dir, "linked.json")
+	writeJSON(t, real, `{"mcpServers": {}}`)
+	if err := os.Symlink(real, link); err != nil {
+		t.Skip("symlinks unavailable")
+	}
+	p, err := planMCPServerEntry(link, "mcpServers", serverEntry("http://x/mcp", "t", "", "", "url", false), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := commitMCPServerEntry(p); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Lstat(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("attach severed the symlink — must write through it")
+	}
+	doc := readDoc(t, real)
+	if doc["mcpServers"].(map[string]any)["toolhost"] == nil {
+		t.Fatal("entry missing after symlink write-through")
+	}
+}
+
+// VS Code's mcp.json namespaces servers under "servers", not "mcpServers".
+func TestPlanTopKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mcp.json")
+	writeJSON(t, path, `{"servers": {"other": {"url": "http://x"}}}`)
+	entry := serverEntry("http://127.0.0.1:8188/mcp", "th_k", "", "", "url", false)
+	p, err := planMCPServerEntry(path, "servers", entry, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := commitMCPServerEntry(p); err != nil {
+		t.Fatal(err)
+	}
+	doc := readDoc(t, path)
+	if doc["servers"].(map[string]any)["toolhost"] == nil || doc["mcpServers"] != nil {
+		t.Fatalf("entry must land under \"servers\": %v", doc)
 	}
 }
 

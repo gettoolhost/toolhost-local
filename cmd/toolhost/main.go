@@ -77,15 +77,16 @@ func main() {
 		cfg := fs.String("c", "", cfgFlagUsage)
 		stdio := fs.Bool("stdio", false, "attach as a spawned stdio server instead of the HTTP endpoint")
 		printOnly := fs.Bool("print", false, "print the mcpServers JSON entry instead of writing it")
+		dryRun := fs.Bool("dry-run", false, "show the planned merge without writing")
 		_ = fs.Parse(os.Args[2:])
 		client := ""
 		if fs.NArg() == 1 {
 			client = fs.Arg(0)
 		} else if fs.NArg() > 1 || !*printOnly {
-			fmt.Fprintln(os.Stderr, "usage: toolhost attach [-c config] [--stdio] [--print] <claude|devin|cursor|windsurf>")
+			fmt.Fprintln(os.Stderr, "usage: toolhost attach [-c config] [--stdio] [--print] [--dry-run] <claude|devin|cursor|windsurf|vscode|gemini>")
 			os.Exit(2)
 		}
-		err = app.Attach(config.DefaultPath(*cfg), client, *stdio, *printOnly, os.Stdout)
+		err = app.Attach(config.DefaultPath(*cfg), client, *stdio, *printOnly, *dryRun, os.Stdout)
 
 	case "doctor":
 		fs := flag.NewFlagSet("doctor", flag.ExitOnError)
@@ -150,7 +151,8 @@ func usage() {
   toolhost auth       grant upstream OAuth for a backend (browser flow)
   toolhost logout     drop a backend's stored upstream grant
   toolhost attach     register the gateway with an MCP client
-                      <claude|devin|cursor|windsurf> · --stdio · --print
+                      <claude|devin|cursor|windsurf|vscode|gemini>
+                      --stdio · --print · --dry-run
   toolhost doctor     check an install end to end (config, token, backends)
   toolhost status     gateway health: backends up/down, counts, requests
   toolhost serve      serve /mcp — Authorization: Bearer <token>

@@ -1,8 +1,18 @@
-# toolhost-local release pipeline — tag v* and run `goreleaser release`.
-# Produces GitHub release archives + checksums + a Homebrew tap formula.
+# toolhost-local release pipeline — push a v* tag; .github/workflows/
+# release.yml runs this, signs the checksums (cosign keyless), attests
+# build provenance, verifies the checksums, then un-drafts the GitHub
+# release. The ghcr image, Homebrew cask, and MCP registry entry publish
+# inside this run — only the release page stays draft until verify.
+# Local fallback: `goreleaser release --clean` (needs docker + a ghcr
+# login and a TAP_GITHUB_TOKEN-capable GITHUB_TOKEN env) — also produces
+# a draft; un-draft with `gh release edit vX.Y.Z --draft=false`.
 version: 2
 
 project_name: toolhost
+
+release:
+  # Nothing publishes unverified — CI verifies checksums before un-drafting.
+  draft: true
 
 builds:
   - id: toolhost
@@ -28,15 +38,46 @@ checksum:
 changelog:
   use: github-native
 
+# OCI image → ghcr.io. Exists for the MCP registry package channel and
+# container workflows; the binary serves both HTTP and --stdio.
+dockers_v2:
+  - images:
+      - ghcr.io/gettoolhost/toolhost
+    tags:
+      - "{{ .Version }}"
+      - latest
+    labels:
+      org.opencontainers.image.source: https://github.com/gettoolhost/toolhost-local
+      # MCP registry requires this label on the image.
+      io.modelcontextprotocol.server.name: io.github.gettoolhost/toolhost-local
+
 # Homebrew: `brew install gettoolhost/tap/toolhost` — needs a
 # gettoolhost/homebrew-tap repo before the first release.
-brews:
+homebrew_casks:
   - name: toolhost
     repository:
       owner: gettoolhost
       name: homebrew-tap
-    directory: Formula
+    directory: Casks
+    binaries: [toolhost]
     homepage: https://github.com/gettoolhost/toolhost-local
     description: "One governed front door between your agent and your MCP servers"
-    test: |
-      system "#{bin}/toolhost", "version"
+
+# MCP server registry — server.json generated and published by goreleaser
+# via GitHub OIDC (id-token: write in the release workflow).
+mcp:
+  name: io.github.gettoolhost/toolhost-local
+  title: Toolhost
+  description: "One governed front door between an agent and its MCP servers — human-approved tool allowlisting, audit, and backend credential isolation"
+  homepage: https://github.com/gettoolhost/toolhost-local
+  auth:
+    type: github-oidc
+  repository:
+    url: https://github.com/gettoolhost/toolhost-local
+    source: github
+    id: "1409296692"
+  packages:
+    - registry_type: oci
+      identifier: "ghcr.io/gettoolhost/toolhost:{{ .Version }}"
+      transport:
+        type: stdio

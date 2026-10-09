@@ -9,9 +9,10 @@ if present, else `$XDG_CONFIG_HOME/toolhost/toolhost.json` (fallback
 ```bash
 toolhost init          # write config + fresh th_* bearer token; refuses overwrite
 toolhost doctor        # verify an install: config, token, port, backends, grants, service
-toolhost attach <client>   # write the MCP server entry — claude | devin | cursor | windsurf
+toolhost attach <client>   # write the MCP server entry — claude | devin | cursor | windsurf | vscode | gemini
 toolhost attach --print    # print the mcpServers JSON for any other client
 toolhost attach --stdio <client>  # attach the spawn form (serve --stdio, no bearer)
+toolhost attach --dry-run <client>  # show the planned merge (create/update/attached) without writing
 toolhost serve         # HTTP /mcp on <listen>; bearer-gated; watches config
 toolhost serve --stdio # same surface over stdin/stdout — no bearer, pipe owner is authority
 toolhost status        # live report via toolhost__status; config-only fallback if down
@@ -19,6 +20,16 @@ toolhost install       # launchd (macOS) / systemd --user (Linux) service
 toolhost uninstall     # stop + remove the service
 toolhost version
 ```
+
+- File-backed clients are merged ownership-aware: an identical `toolhost`
+  entry is a no-op, a stale toolhost entry is refreshed in place
+  preserving keys the client added, and a `toolhost` entry that isn't
+  this gateway's is refused rather than overwritten. Writes are
+  compare-and-swap — if the file changed between read and write, attach
+  fails instead of losing it. `devin` attaches through its own CLI.
+- Conditional clients are only written into a config that already
+  exists — attach never creates a bare config for a client that isn't
+  set up.
 
 ## Governance
 

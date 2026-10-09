@@ -1,0 +1,65 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write      # create/edit the GitHub release
+  packages: write      # push the OCI image to ghcr.io
+  id-token: write      # cosign keyless signing + provenance + MCP registry OIDC
+  attestations: write  # actions/attest-build-provenance
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.2"
+      - uses: sigstore/cosign-installer@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: ghcr login
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+      - name: Build + draft release
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          # The Actions GITHUB_TOKEN can't push to homebrew-tap — a PAT or
+          # GitHub App token with repo scope on both repos is required.
+          GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
+      - name: Sign checksums (keyless)
+        run: |
+          cd dist
+          cosign sign-blob --yes \
+            --bundle checksums.txt.sigstore.json \
+            checksums.txt
+          gh release upload "${GITHUB_REF_NAME}" checksums.txt.sigstore.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*
+      - name: Verify before publish
+        run: |
+          set -euo pipefail
+          work=$(mktemp -d)
+          cd "$work"
+          gh release download "${GITHUB_REF_NAME}" -p 'checksums.txt' -p 'toolhost_*'
+          sha256sum -c checksums.txt --ignore-missing
+          # every archive on the release must be covered by the checksums
+          count=$(ls toolhost_* | wc -l)
+          covered=$(grep -c 'toolhost_' checksums.txt)
+          [ "$count" -eq "$covered" ]
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish (un-draft)
+        run: gh release edit "${GITHUB_REF_NAME}" --draft=false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
