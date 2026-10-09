@@ -88,6 +88,9 @@ func Attach(cfgPath, client string, stdio, printOnly, dryRun bool, w io.Writer) 
 		fmt.Fprintf(w, "%s %s\n", res.action, path)
 		if res.action == planCreate || res.action == planUpdate {
 			raw, _ := json.MarshalIndent(res.doc[t.topKey].(map[string]any)["toolhost"], "  ", "  ")
+			// The entry carries the gateway bearer in headers — mask it
+			// in display output exactly as the CLI branch does.
+			raw = redactTokenBytes(raw, token)
 			fmt.Fprintf(w, "  \"toolhost\": %s\n", raw)
 		}
 		return nil
@@ -336,6 +339,10 @@ func planMCPServerEntry(path, topKey string, entry map[string]any, conditional b
 			}
 		}
 		for k, v := range entry {
+			if k == "headers" {
+				existing[k] = mergeHeaders(existing[k], v)
+				continue
+			}
 			existing[k] = v
 		}
 		return &mergePlan{action: planUpdate, path: path, before: raw, existed: existed, doc: doc}, nil
@@ -424,6 +431,38 @@ func commitMCPServerEntry(p *mergePlan) error {
 	return os.Rename(tmp, p.path)
 }
 
+// mergeHeaders preserves client-added header keys while replacing the
+// gateway's own: headers is gateway-owned at the entry level (a transport
+// switch drops the whole key) but its contents are extras we must not
+// clobber — a user's "X-Team" header survives an update while the stale
+// Authorization bearer is replaced.
+func mergeHeaders(old, new any) map[string]any {
+	out := map[string]any{}
+	for k, v := range headerPairs(old) {
+		out[k] = v
+	}
+	for k, v := range headerPairs(new) {
+		out[k] = v
+	}
+	return out
+}
+
+// headerPairs normalizes a headers value — map[string]string in a fresh
+// entry, map[string]any after JSON round-trip.
+func headerPairs(v any) map[string]any {
+	switch m := v.(type) {
+	case map[string]any:
+		return m
+	case map[string]string:
+		out := make(map[string]any, len(m))
+		for k, s := range m {
+			out[k] = s
+		}
+		return out
+	}
+	return nil
+}
+
 // redactToken masks the gateway bearer in a copy of argv for display.
 // Empty token (stdio attach) is a no-op — ReplaceAll on "" would corrupt
 // every argument.
@@ -437,6 +476,15 @@ func redactToken(argv []string, token string) []string {
 		}
 	}
 	return out
+}
+
+// redactTokenBytes is redactToken for marshaled JSON — masks the bearer
+// wherever it appears in a dry-run entry dump.
+func redactTokenBytes(b []byte, token string) []byte {
+	if token == "" {
+		return b
+	}
+	return bytes.ReplaceAll(b, []byte(token), []byte("***"))
 }
 
 func devinArgs(url, token, bin, cfg string, stdio bool) []string {

@@ -73,16 +73,17 @@ func testLive(t *testing.T) (*liveSet, *config.File, string) {
 	}
 	t.Cleanup(func() { sink.Close() })
 	live := &liveSet{
-		path:  cfgPath,
-		fd:    frontdoor.NewBare(&core.Resolution{}, nil, nil),
-		sink:  sink,
-		w:     io.Discard,
-		ctx:   context.Background(),
-		ups:   map[string]core.Upstream{},
-		cfgs:  map[string]*config.Backend{"a": cfg.Backends["a"]},
-		opts:  &upstream.Options{},
-		dead:  make(chan deadSig, 8),
-		retry: map[string]*retryState{},
+		path:        cfgPath,
+		fd:          frontdoor.NewBare(&core.Resolution{}, nil, nil),
+		sink:        sink,
+		w:           io.Discard,
+		ctx:         context.Background(),
+		ups:         map[string]core.Upstream{},
+		cfgs:        map[string]*config.Backend{"a": cfg.Backends["a"]},
+		opts:        &upstream.Options{},
+		dead:        make(chan deadSig, 8),
+		deadPending: map[string]deadSig{},
+		retry:       map[string]*retryState{},
 	}
 	return live, cfg, cfgPath
 }
@@ -383,5 +384,30 @@ func TestAuditTailReadsRotatedGeneration(t *testing.T) {
 	}
 	if !strings.HasPrefix(evs[0].Tool, "two") || !strings.HasPrefix(evs[1].Tool, "three") {
 		t.Fatalf("wrong order across the rotation seam: %+v", evs)
+	}
+}
+
+// A death signal that can't queue is parked, not dropped — drainDead
+// picks it up on the next sweep and the dead backend still comes out.
+func TestSignalDeathParksWhenFull(t *testing.T) {
+	live, _, _ := testLive(t)
+	up1 := newFakeUp("a", "x")
+	live.ups["a"] = up1
+	for i := 0; i < cap(live.dead); i++ {
+		live.dead <- deadSig{name: "filler"}
+	}
+	live.signalDeath(deadSig{name: "a", up: up1, err: errors.New("dropped")})
+	if live.deadPending["a"].up != up1 {
+		t.Fatal("overflow signal was not parked in deadPending")
+	}
+	live.mu.Lock()
+	changed := live.drainDead()
+	_, alive := live.ups["a"]
+	live.mu.Unlock()
+	if !changed || alive {
+		t.Fatalf("parked signal was lost — backend still live: changed=%v alive=%v", changed, alive)
+	}
+	if len(live.deadPending) != 0 {
+		t.Fatal("deadPending not cleared after drain")
 	}
 }

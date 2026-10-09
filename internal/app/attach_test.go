@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -373,5 +374,53 @@ func TestRedactToken(t *testing.T) {
 	argv = devinArgs("", "", "toolhost", "/c.json", true)
 	if got := redactToken(argv, ""); !reflect.DeepEqual(got, argv) {
 		t.Fatalf("empty token must pass argv through: %v", got)
+	}
+}
+
+// A stale entry's headers map holds gateway-owned Authorization plus
+// client-added keys — update must merge: refresh the bearer, keep extras.
+func TestUpdatePreservesClientHeaderKeys(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mcp.json")
+	writeJSON(t, path, `{"mcpServers": {"toolhost": {"url": "http://old/mcp", "headers": {"Authorization": "Bearer old", "X-Team": "keep-me"}}}}`)
+	fresh := serverEntry("http://127.0.0.1:9999/mcp", "th_new", "", "", "url", false)
+	p, err := planMCPServerEntry(path, "mcpServers", fresh, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.action != planUpdate {
+		t.Fatalf("want update, got %s", p.action)
+	}
+	if err := commitMCPServerEntry(p); err != nil {
+		t.Fatal(err)
+	}
+	h := readDoc(t, path)["mcpServers"].(map[string]any)["toolhost"].(map[string]any)["headers"].(map[string]any)
+	if h["X-Team"] != "keep-me" {
+		t.Fatalf("update dropped a client header key: %v", h)
+	}
+	if h["Authorization"] != "Bearer th_new" {
+		t.Fatalf("bearer not refreshed: %v", h)
+	}
+}
+
+// attach --dry-run must never print the gateway bearer for file clients —
+// same rule as the CLI branch.
+func TestDryRunRedactsBearer(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "toolhost.json")
+	if err := os.WriteFile(cfg, []byte(`{"token":"th_sekrit"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := Attach(cfg, "cursor", false, false, true, &buf); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf.String(), "th_sekrit") {
+		t.Fatalf("dry-run leaked the bearer:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "Bearer ***") {
+		t.Fatalf("expected a redacted bearer in output:\n%s", buf.String())
 	}
 }

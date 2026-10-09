@@ -587,10 +587,11 @@ func Serve(ctx context.Context, path string, w io.Writer, stdio bool) error {
 		cfgs:  map[string]*config.Backend{},
 		opts:  &upstream.Options{Tokens: tokens, Out: io.Discard, DefaultCallTimeout: callTimeout(f)},
 		token: f.Token, listen: f.Listen, auditLog: auditLog,
-		mode:  f.Mode,
-		ctx:   ctx,
-		dead:  make(chan deadSig, 8),
-		retry: map[string]*retryState{},
+		mode:        f.Mode,
+		ctx:         ctx,
+		dead:        make(chan deadSig, 8),
+		deadPending: map[string]deadSig{},
+		retry:       map[string]*retryState{},
 		dial: func(ctx context.Context, name string, cfg *config.Backend, opts *upstream.Options) (core.Upstream, error) {
 			return upstream.Connect(ctx, name, cfg, opts)
 		},
@@ -676,11 +677,14 @@ type liveSet struct {
 	ctx context.Context
 
 	// Reconnect machinery: dead carries session-death signals from
-	// per-backend watcher goroutines; retry is the per-backend backoff.
-	// dial is injectable for tests — production wires upstream.Connect.
-	dead  chan deadSig
-	retry map[string]*retryState
-	dial  func(ctx context.Context, name string, cfg *config.Backend, opts *upstream.Options) (core.Upstream, error)
+	// per-backend watcher goroutines; deadPending parks signals that
+	// arrive while the channel is full so none are lost; retry is the
+	// per-backend backoff. dial is injectable for tests — production
+	// wires upstream.Connect.
+	dead        chan deadSig
+	deadPending map[string]deadSig
+	retry       map[string]*retryState
+	dial        func(ctx context.Context, name string, cfg *config.Backend, opts *upstream.Options) (core.Upstream, error)
 	// closed is set by closeAll on Serve exit — a dial completing after
 	// shutdown must not install a session nobody will close.
 	closed bool
@@ -932,6 +936,10 @@ func (l *liveSet) drainDead() bool {
 		case sig := <-l.dead:
 			changed = l.noteDead(sig) || changed
 		default:
+			for name, sig := range l.deadPending {
+				changed = l.noteDead(sig) || changed
+				delete(l.deadPending, name)
+			}
 			return changed
 		}
 	}
@@ -1046,15 +1054,19 @@ func (l *liveSet) retrySweep() {
 	}
 }
 
-// signalDeath queues a session-death signal for the watch loop.
+// signalDeath queues a session-death signal for the watch loop. The send
+// is non-blocking — Call handlers must never stall on reconnect latency
+// while the watch loop sits inside a dial. A signal that can't queue is
+// parked in deadPending (keyed by backend, latest wins) rather than
+// dropped: the Wait-driven signal is one-shot, and losing it would leave
+// a quiet dead backend stranded until a call happened to error.
 func (l *liveSet) signalDeath(sig deadSig) {
-	// Non-blocking — a flapping session emits one signal per failing call
-	// and the channel drains only between retrySweep dials; Call handlers
-	// must never stall on reconnect latency. A dropped signal self-heals:
-	// the session is still dead, and the next call error re-signals.
 	select {
 	case l.dead <- sig:
 	default:
+		l.mu.Lock()
+		l.deadPending[sig.name] = sig
+		l.mu.Unlock()
 	}
 }
 

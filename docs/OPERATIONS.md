@@ -109,8 +109,10 @@ image, pushes a Homebrew cask to `gettoolhost/homebrew-tap`, publishes
 `server.json` to the MCP registry, and creates a **draft** GitHub
 release. CI then signs `checksums.txt` with cosign keyless
 (`checksums.txt.sigstore.json`), attests build provenance for every
-release artifact, re-downloads the artifacts, re-verifies every
-checksum, and only then un-drafts.
+release artifact, re-downloads the artifacts, verifies the checksums
+signature (`cosign verify-blob`, pinned to the release workflow's
+certificate identity), re-verifies every checksum against it, runs
+`gh attestation verify` on each archive, and only then un-drafts.
 
 Note what the draft gates: the ghcr image, Homebrew cask, and MCP
 registry entry publish inside the GoReleaser step, before the checksum

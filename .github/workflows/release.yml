@@ -51,12 +51,24 @@ jobs:
           set -euo pipefail
           work=$(mktemp -d)
           cd "$work"
-          gh release download "${GITHUB_REF_NAME}" -p 'checksums.txt' -p 'toolhost_*'
+          gh release download "${GITHUB_REF_NAME}" \
+            -p 'checksums.txt' -p 'checksums.txt.sigstore.json' -p 'toolhost_*'
+          # the checksums file's cosign signature is the root of trust —
+          # verify it before trusting its contents
+          cosign verify-blob \
+            --bundle checksums.txt.sigstore.json \
+            --certificate-identity-regexp 'https://github.com/gettoolhost/toolhost-local/.github/workflows/release.yml@.*' \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            checksums.txt
           sha256sum -c checksums.txt --ignore-missing
           # every archive on the release must be covered by the checksums
           count=$(ls toolhost_* | wc -l)
           covered=$(grep -c 'toolhost_' checksums.txt)
           [ "$count" -eq "$covered" ]
+          # provenance attestation for each archive
+          for f in toolhost_*; do
+            gh attestation verify "$f" -R gettoolhost/toolhost-local
+          done
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Publish (un-draft)

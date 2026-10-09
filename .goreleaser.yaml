@@ -11,7 +11,9 @@ version: 2
 project_name: toolhost
 
 release:
-  # Nothing publishes unverified — CI verifies checksums before un-drafting.
+  # Only the GitHub release page is draft-gated — the ghcr image, Homebrew
+  # cask, and MCP registry entry publish inside this run, before CI's
+  # checksum/signature verification.
   draft: true
 
 builds:
