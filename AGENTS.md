@@ -42,8 +42,9 @@ the separator without understanding why `::` was rejected.
   keyed under `projects/` outside it — never in the working folder.
   Relative `audit_log` anchors to the state dir; the `requested` queue
   lives in `toolhost_requests.json` there, not in the config.
-- The MCP server entry name is `local-gateway`; `toolhost` is the legacy
-  name we recognize and migrate, never reissue.
+- The MCP server entry name is `local-gateway` at every scope — a
+  project-scope entry shadows a user-scope one under the same name.
+  Entries under any other name are never ours to touch.
 
 ## Local files
 

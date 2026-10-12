@@ -747,12 +747,12 @@ func TestRequestEndToEnd(t *testing.T) {
 		t.Fatalf("request did not persist to state: %+v", reqs)
 	}
 	// The queue lives in the env's state file — never in the config.
-	reloaded, err := config.Load(cfgPath)
+	raw, err := os.ReadFile(cfgPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(reloaded.Requested) != 0 {
-		t.Fatalf("request leaked into config: %+v", reloaded.Requested)
+	if strings.Contains(string(raw), "requested") || strings.Contains(string(raw), "up__secret") {
+		t.Fatalf("request leaked into config:\n%s", raw)
 	}
 	if _, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "up__secret"}); err == nil {
 		t.Fatal("requested tool is callable — a request must not widen the surface")

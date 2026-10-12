@@ -95,9 +95,8 @@ func TestPlanMergeEntry(t *testing.T) {
 		t.Fatalf("re-attach should be a no-op, got %s", p2.action)
 	}
 
-	// A stale entry of ours under the legacy "toolhost" name updates and
-	// migrates to "local-gateway", keeping client-added keys.
-	writeJSON(t, path, `{"mcpServers": {"toolhost": {"url": "http://old/mcp", "headers": {"Authorization": "Bearer old"}, "disabled": true}}}`)
+	// A stale entry of ours updates in place and keeps client-added keys.
+	writeJSON(t, path, `{"mcpServers": {"local-gateway": {"url": "http://old/mcp", "headers": {"Authorization": "Bearer old"}, "disabled": true}}}`)
 	fresh := serverEntry("http://127.0.0.1:9999/mcp", "th_new", "", "", "url", false)
 	p3, err := planMCPServerEntry(path, "mcpServers", fresh, false)
 	if err != nil {
@@ -109,14 +108,7 @@ func TestPlanMergeEntry(t *testing.T) {
 	if err := commitMCPServerEntry(p3); err != nil {
 		t.Fatal(err)
 	}
-	servers = readDoc(t, path)["mcpServers"].(map[string]any)
-	got, ok := servers["local-gateway"].(map[string]any)
-	if !ok {
-		t.Fatalf("legacy entry did not migrate to local-gateway: %v", servers)
-	}
-	if servers["toolhost"] != nil {
-		t.Fatalf("migration left the legacy key behind: %v", servers)
-	}
+	got := readDoc(t, path)["mcpServers"].(map[string]any)["local-gateway"].(map[string]any)
 	if got["url"] != "http://127.0.0.1:9999/mcp" || got["disabled"] != true {
 		t.Fatalf("update must refresh ours and keep extras: %v", got)
 	}
@@ -199,7 +191,7 @@ func TestCommitCASConflict(t *testing.T) {
 // `url`/`headers`, which clients read as stdio.
 func TestPlanTransportSwitchDropsStaleKeys(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "mcp.json")
-	writeJSON(t, path, `{"mcpServers": {"toolhost": {"command": "/old/toolhost", "args": ["serve", "--stdio", "-c", "/c.json"], "disabled": true}}}`)
+	writeJSON(t, path, `{"mcpServers": {"local-gateway": {"command": "/old/toolhost", "args": ["serve", "--stdio", "-c", "/c.json"], "disabled": true}}}`)
 	http := serverEntry("http://127.0.0.1:8188/mcp", "th_k", "", "", "url", false)
 	p, err := planMCPServerEntry(path, "mcpServers", http, false)
 	if err != nil {
@@ -221,9 +213,8 @@ func TestPlanTransportSwitchDropsStaleKeys(t *testing.T) {
 		t.Fatalf("update must write ours and keep extras: %v", got)
 	}
 
-	// And the reverse — http → stdio drops url/headers. (Legacy key again:
-	// the migrated entry lands under local-gateway either way.)
-	writeJSON(t, path, `{"mcpServers": {"toolhost": {"type": "http", "url": "http://x/mcp", "headers": {"Authorization": "Bearer t"}}}}`)
+	// And the reverse — http → stdio drops url/headers.
+	writeJSON(t, path, `{"mcpServers": {"local-gateway": {"type": "http", "url": "http://x/mcp", "headers": {"Authorization": "Bearer t"}}}}`)
 	sp := serverEntry("", "", "/b/toolhost", "/c.json", "url", true)
 	p2, err := planMCPServerEntry(path, "mcpServers", sp, false)
 	if err != nil {
@@ -428,7 +419,7 @@ func TestRedactToken(t *testing.T) {
 func TestUpdatePreservesClientHeaderKeys(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "mcp.json")
-	writeJSON(t, path, `{"mcpServers": {"toolhost": {"url": "http://old/mcp", "headers": {"Authorization": "Bearer old", "X-Team": "keep-me"}}}}`)
+	writeJSON(t, path, `{"mcpServers": {"local-gateway": {"url": "http://old/mcp", "headers": {"Authorization": "Bearer old", "X-Team": "keep-me"}}}}`)
 	fresh := serverEntry("http://127.0.0.1:9999/mcp", "th_new", "", "", "url", false)
 	p, err := planMCPServerEntry(path, "mcpServers", fresh, false)
 	if err != nil {
@@ -537,7 +528,7 @@ func TestLooksLikeOursArgvCommand(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "opencode.json")
 	// A stale spawn (different config path) plus a client-added key — not
 	// identical, so ownership decides update vs refusal.
-	writeJSON(t, path, `{"mcp": {"toolhost": {"type": "local", "command": ["/opt/toolhost", "serve", "--stdio", "-c", "/old/toolhost.json"], "enabled": false}}}`)
+	writeJSON(t, path, `{"mcp": {"local-gateway": {"type": "local", "command": ["/opt/toolhost", "serve", "--stdio", "-c", "/old/toolhost.json"], "enabled": false}}}`)
 	p, err := planMCPServerEntry(path, "mcp", opencodeEntry("", "", "/opt/toolhost", "/c/toolhost.json", "url", true), false)
 	if err != nil {
 		t.Fatalf("a stale argv-command entry must update, not refuse: %v", err)

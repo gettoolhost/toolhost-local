@@ -1,7 +1,6 @@
 package config
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -236,13 +235,13 @@ func TestRequestTools(t *testing.T) {
 	if !RequestSet(reqs)["b__want"] || reqs[0].Reason != "need it" {
 		t.Fatalf("request not recorded: %+v", reqs)
 	}
-	// Nothing landed in the config file.
-	reloaded, err := Load(cfg)
+	// Nothing landed in the config file — the queue is state, not policy.
+	raw, err := os.ReadFile(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(reloaded.Requested) != 0 {
-		t.Fatalf("request leaked into config: %+v", reloaded.Requested)
+	if strings.Contains(string(raw), "requested") || strings.Contains(string(raw), "b__want") {
+		t.Fatalf("request leaked into config:\n%s", raw)
 	}
 
 	// Deduped — a second ask adds nothing.
@@ -298,32 +297,6 @@ func TestRequestTools(t *testing.T) {
 	}
 }
 
-// Legacy `requested` in the config drains into the state file once —
-// the config is rewritten without it.
-func TestRequestsDrainFromConfig(t *testing.T) {
-	t.Setenv("TOOLHOST_HOME", t.TempDir())
-	dir := t.TempDir()
-	cfg := filepath.Join(dir, "toolhost.json")
-	f := &File{Token: "t", Requested: []Request{{Name: "b__old", Reason: "legacy"}}}
-	if err := f.Save(cfg); err != nil {
-		t.Fatal(err)
-	}
-	reqs, err := LoadRequests(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(reqs) != 1 || reqs[0].Name != "b__old" {
-		t.Fatalf("drain lost the request: %+v", reqs)
-	}
-	reloaded, err := Load(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(reloaded.Requested) != 0 {
-		t.Fatalf("legacy requested still in config: %+v", reloaded.Requested)
-	}
-}
-
 func TestDefaultPath(t *testing.T) {
 	// Explicit -c always wins.
 	if got := DefaultPath("/tmp/x.json"); got != "/tmp/x.json" {
@@ -350,55 +323,30 @@ func TestDefaultPath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A committed ./toolhost.json beats the canonical home.
+	// A committed ./.toolhost/toolhost.json beats the canonical home —
+	// and a bare ./toolhost.json is NOT a config: it reads as project
+	// content, so the gateway must not pick it up.
+	if err := os.MkdirAll(filepath.Join(dir, ".toolhost"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, SharedConfigPath), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(dir, "toolhost.json"), []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := DefaultPath(""); got != "toolhost.json" {
-		t.Fatalf("project config should win, got %q", got)
+	if got := DefaultPath(""); got != SharedConfigPath {
+		t.Fatalf("shared config should win, got %q", got)
 	}
 
-	// No project config → the canonical home.
-	if err := os.Remove(filepath.Join(dir, "toolhost.json")); err != nil {
+	// No project config → the canonical home (the bare toolhost.json
+	// is correctly ignored).
+	if err := os.Remove(filepath.Join(dir, SharedConfigPath)); err != nil {
 		t.Fatal(err)
 	}
 	want := filepath.Join(home, "toolhost.json")
 	if got := DefaultPath(""); got != want {
 		t.Fatalf("want config home %q, got %q", want, got)
-	}
-}
-
-// MigrateHome moves a legacy ~/.config/toolhost tree to ~/.toolhost once;
-// a pre-existing new home is left alone (never merged, never clobbered).
-func TestMigrateHome(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("TOOLHOST_HOME", "") // explicit home only — migration is for the default path
-	xdg := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", xdg)
-
-	legacy := filepath.Join(xdg, "toolhost")
-	if err := os.MkdirAll(legacy, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(legacy, "toolhost.json"), []byte(`{"token":"th_x"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	var buf bytes.Buffer
-	MigrateHome(&buf)
-	want := filepath.Join(home, ".toolhost", "toolhost.json")
-	if _, err := os.Stat(want); err != nil {
-		t.Fatalf("legacy home not migrated: %v\n%s", err, buf.String())
-	}
-	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
-		t.Fatal("legacy dir still present after migration")
-	}
-
-	// Second run is a no-op; an existing new home is never clobbered.
-	buf.Reset()
-	MigrateHome(&buf)
-	if buf.String() != "" {
-		t.Fatalf("migration must be silent once done, got %q", buf.String())
 	}
 }
 

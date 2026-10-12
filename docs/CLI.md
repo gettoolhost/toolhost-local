@@ -2,7 +2,7 @@
 
 `toolhost <verb> [-c config]`. Config resolution, nearest scope first:
 `-c` → this folder's private env (`~/.toolhost/projects/<id>/toolhost.json`)
-→ `./toolhost.json` → `~/.toolhost/toolhost.json` (`$TOOLHOST_HOME`
+→ `./.toolhost/toolhost.json` → `~/.toolhost/toolhost.json` (`$TOOLHOST_HOME`
 relocates the whole home for testing).
 
 Everything sensitive lives in `~/.toolhost/` — credentials, OAuth grants,
@@ -14,7 +14,7 @@ toolhost file unless you `init --shared` one on purpose.
 ```bash
 toolhost init            # global env: ~/.toolhost/toolhost.json + fresh th_* token
 toolhost init --project  # private env for THIS folder: ~/.toolhost/projects/<id>/
-toolhost init --shared   # committable ./toolhost.json — env: ref, no literal secret
+toolhost init --shared   # committable ./.toolhost/toolhost.json — env: ref, no literal secret
 ```
 
 - `init` never overwrites — delete first if you mean it.
@@ -22,7 +22,7 @@ toolhost init --shared   # committable ./toolhost.json — env: ref, no literal 
   commit, nothing to leak. `--shared` is the opt-in for teams — it writes
   `"token": "env:TOOLHOST_TOKEN"`, safe for source control (stdio serving
   needs no token; HTTP serving does).
-- A private env shadows a committed `./toolhost.json` in the same folder —
+- A private env shadows a committed `./.toolhost/toolhost.json` in the same folder —
   your scope wins, like `local > project > user` in the clients.
 
 ## Lifecycle
@@ -52,9 +52,8 @@ toolhost version
   hold project servers pending trust — open the folder and approve when
   prompted.
 - File-backed clients are merged ownership-aware: an identical
-  `local-gateway` entry is a no-op, a stale toolhost entry (or a legacy
-  `toolhost` one) is refreshed in place — migrating to the canonical
-  name — preserving keys the client added, and an entry under our name
+  `local-gateway` entry is a no-op, a stale one is refreshed in place
+  preserving keys the client added, and an entry under our name
   that isn't this gateway's is refused rather than overwritten. Writes
   are compare-and-swap — if the file changed between read and write,
   attach fails instead of losing it. `devin` and `codex` attach through

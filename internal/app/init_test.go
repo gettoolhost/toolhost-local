@@ -52,10 +52,13 @@ func TestInitProjectKeysPrivateEnv(t *testing.T) {
 	if !strings.HasPrefix(want, filepath.Join(home, "projects")) {
 		t.Fatalf("private env escaped the projects dir: %s", want)
 	}
+	if _, err := os.Stat(filepath.Join(dir, ".toolhost")); !os.IsNotExist(err) {
+		t.Fatal("init --project must not create ./.toolhost/")
+	}
 	if _, err := os.Stat(filepath.Join(dir, "toolhost.json")); !os.IsNotExist(err) {
 		t.Fatal("init --project must not create ./toolhost.json")
 	}
-	// And it resolves: this folder's env wins over ./toolhost.json/global.
+	// And it resolves: this folder's env wins over shared/global.
 	if got := config.DefaultPath(""); got != want {
 		t.Fatalf("private env should resolve first, got %q", got)
 	}
@@ -65,8 +68,9 @@ func TestInitProjectKeysPrivateEnv(t *testing.T) {
 	}
 }
 
-// init --shared writes ./toolhost.json holding an env: reference — the
-// committable shape carries no literal credential.
+// init --shared writes ./.toolhost/toolhost.json holding an env:
+// reference — the committable shape carries no literal credential, and
+// the hidden namespaced path reads as tooling, not project content.
 func TestInitSharedWritesEnvRef(t *testing.T) {
 	t.Setenv("TOOLHOST_HOME", t.TempDir())
 	dir := t.TempDir()
@@ -76,9 +80,13 @@ func TestInitSharedWritesEnvRef(t *testing.T) {
 	if err := app.InitShared(&buf); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := os.ReadFile(filepath.Join(dir, "toolhost.json"))
+	raw, err := os.ReadFile(filepath.Join(dir, ".toolhost", "toolhost.json"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	// And it resolves — the shared file is the env for this folder.
+	if got := config.DefaultPath(""); got != config.SharedConfigPath {
+		t.Fatalf("shared env should resolve, got %q", got)
 	}
 	if strings.Contains(string(raw), "th_") {
 		t.Fatalf("shared config must not carry a literal token:\n%s", raw)
@@ -100,7 +108,7 @@ func TestSharedConfigLoadsWithoutToken(t *testing.T) {
 	if err := app.InitShared(&buf); err != nil {
 		t.Fatal(err)
 	}
-	f, err := config.Load(filepath.Join(dir, "toolhost.json"))
+	f, err := config.Load(filepath.Join(dir, ".toolhost", "toolhost.json"))
 	if err != nil {
 		t.Fatalf("env: ref must not break load: %v", err)
 	}

@@ -2,7 +2,7 @@
 
 One file per environment: `toolhost.json`, resolved nearest-scope-first —
 `-c` → this folder's private env (`~/.toolhost/projects/<id>/`) →
-`./toolhost.json` → `~/.toolhost/toolhost.json`. Written `0600`, saved
+`./.toolhost/toolhost.json` → `~/.toolhost/toolhost.json`. Written `0600`, saved
 atomically (tmp+rename). Full example: `toolhost.example.json`.
 
 Runtime state (OAuth grants, audit log, the agent request queue) lives in
@@ -31,8 +31,7 @@ hand unless you mean it — `toolhost enable/disable` manages it.
 Agent-filed requests are runtime state, not config: they live in
 `toolhost_requests.json` in the state dir as `{ "name", "reason", "at" }`
 entries deduped by name — written by `toolhost__request`, consumed by
-`approve`. A legacy `requested` array in the config drains into that file
-on first read.
+`approve`.
 
 ## Backend
 

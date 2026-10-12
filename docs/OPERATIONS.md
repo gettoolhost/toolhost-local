@@ -15,14 +15,13 @@ toolhost install                           # persist as a user service (launchd 
 
 Default config resolution, nearest scope first: `-c` → this folder's
 private env (`~/.toolhost/projects/<id>/toolhost.json`, created by
-`init --project`) → `./toolhost.json` → `~/.toolhost/toolhost.json`
-(`$TOOLHOST_HOME` relocates the whole home; a legacy `~/.config/toolhost`
-tree is moved forward automatically on first run).
+`init --project`) → `./.toolhost/toolhost.json` → `~/.toolhost/toolhost.json`
+(`$TOOLHOST_HOME` relocates the whole home).
 
 All runtime state lives in the environment's **state dir** — beside the
 config for home envs, in the keyed `projects/<id>/` dir for folder envs.
 Tokens, grants, audit log, and the agent request queue land there, never
-in the working folder: a committed `./toolhost.json` produces no
+in the working folder: a committed `./.toolhost/toolhost.json` produces no
 artifacts. A relative `audit_log` anchors to the state dir.
 
 ## Run it

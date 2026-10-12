@@ -7,8 +7,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -117,12 +117,6 @@ type File struct {
 	// forever.
 	CallTimeout string `json:"call_timeout,omitempty"`
 
-	// Requested is the legacy agent-request queue, formerly stored in this
-	// file. New writes go to the env's state dir (toolhost_requests.json)
-	// so a committed config is never mutated at runtime; LoadRequests
-	// drains any entries still here into the state file on first read.
-	Requested []Request `json:"requested,omitempty"`
-
 	// AuditMaxMB caps the audit log size in MiB — past it the log rotates
 	// to <audit_log>.1 (one generation kept; evidence is append-mostly and
 	// recent history is what introspection needs). Absent or non-positive
@@ -185,43 +179,6 @@ func ConfigHome() string {
 	return filepath.Join(home, ".toolhost")
 }
 
-// legacyConfigHome is the pre-.toolhome location — ~/.config/toolhost (or
-// $XDG_CONFIG_HOME/toolhost). MigrateHome moves it forward once.
-func legacyConfigHome() string {
-	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" {
-		return filepath.Join(x, "toolhost")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".config", "toolhost")
-}
-
-// MigrateHome moves a legacy ~/.config/toolhost tree to ~/.toolhost when the
-// new home doesn't exist yet. Called once at CLI start; a no-op after.
-func MigrateHome(w io.Writer) {
-	if os.Getenv("TOOLHOST_HOME") != "" {
-		return
-	}
-	home := ConfigHome()
-	if _, err := os.Stat(home); err == nil {
-		return // new home already exists — leave both alone
-	}
-	legacy := legacyConfigHome()
-	if legacy == "" || legacy == home {
-		return
-	}
-	if _, err := os.Stat(legacy); err != nil {
-		return
-	}
-	if err := os.Rename(legacy, home); err != nil {
-		fmt.Fprintf(w, "note: could not migrate %s → %s: %v\n", legacy, home, err)
-		return
-	}
-	fmt.Fprintf(w, "migrated %s → %s\n", legacy, home)
-}
-
 // projectsDir holds one subdirectory per project environment, keyed by the
 // folder's absolute path.
 func projectsDir() string {
@@ -278,10 +235,15 @@ func StateDir(cfgPath string) string {
 	return filepath.Join(projectsDir(), ProjectKey(dir))
 }
 
+// SharedConfigPath is the committed environment — a hidden, namespaced
+// path so an agent working in the folder never mistakes it for project
+// content. Opt-in only, written by `init --shared`.
+const SharedConfigPath = ".toolhost/toolhost.json"
+
 // DefaultPath resolves which config a command reads when -c isn't given,
-// nearest scope first: a private environment keyed for this folder, then a
-// committed ./toolhost.json, then the global home config. Mirrors the
-// agents' own local > project > user precedence.
+// nearest scope first: a private environment keyed for this folder, then
+// the committed ./.toolhost/toolhost.json, then the global home config.
+// Mirrors the agents' own local > project > user precedence.
 func DefaultPath(explicit string) string {
 	if explicit != "" {
 		return explicit
@@ -291,8 +253,8 @@ func DefaultPath(explicit string) string {
 			return p
 		}
 	}
-	if fileExists("toolhost.json") {
-		return "toolhost.json"
+	if fileExists(SharedConfigPath) {
+		return SharedConfigPath
 	}
 	return filepath.Join(ConfigHome(), "toolhost.json")
 }
@@ -311,39 +273,20 @@ func RequestsPath(cfgPath string) string {
 	return filepath.Join(StateDir(cfgPath), RequestsFile)
 }
 
-// LoadRequests reads the pending agent-request queue, draining any legacy
-// `requested` entries still in the config file into the state file once —
-// the config is then rewritten without them.
+// LoadRequests reads the pending agent-request queue from the env's
+// state dir — never the config file.
 func LoadRequests(cfgPath string) ([]Request, error) {
-	var reqs []Request
-	if raw, err := os.ReadFile(RequestsPath(cfgPath)); err == nil {
-		if err := json.Unmarshal(raw, &reqs); err != nil {
-			return nil, fmt.Errorf("parse %s: %w", RequestsPath(cfgPath), err)
-		}
-	} else if !os.IsNotExist(err) {
+	raw, err := os.ReadFile(RequestsPath(cfgPath))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
 		return nil, err
 	}
-	f, err := Load(cfgPath)
-	if err != nil {
-		return reqs, nil // config unreadable elsewhere — don't mask it here
+	var reqs []Request
+	if err := json.Unmarshal(raw, &reqs); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", RequestsPath(cfgPath), err)
 	}
-	if len(f.Requested) == 0 {
-		return reqs, nil
-	}
-	have := make(map[string]bool, len(reqs))
-	for _, r := range reqs {
-		have[r.Name] = true
-	}
-	for _, r := range f.Requested {
-		if !have[r.Name] {
-			reqs = append(reqs, r)
-		}
-	}
-	if err := SaveRequests(cfgPath, reqs); err != nil {
-		return reqs, nil // queue merged in memory; drain is best-effort
-	}
-	f.Requested = nil
-	_ = f.Save(cfgPath)
 	return reqs, nil
 }
 
@@ -815,16 +758,6 @@ func (f *File) Approve(pins map[string]string) ([]string, error) {
 	if len(added) > 0 {
 		f.Approved = append(f.Approved, added...)
 		sort.Strings(f.Approved)
-	}
-	// Answered requests leave the queue — approval is the response.
-	if len(f.Requested) > 0 {
-		kept := f.Requested[:0]
-		for _, r := range f.Requested {
-			if !set[r.Name] {
-				kept = append(kept, r)
-			}
-		}
-		f.Requested = kept
 	}
 	sort.Strings(changed)
 	return changed, nil

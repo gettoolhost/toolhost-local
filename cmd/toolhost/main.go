@@ -1,7 +1,8 @@
 // toolhost — one governed front door between your agent and your MCP servers.
 //
 // Commands: see usage() — every command takes -c <path>; unset resolves to
-// the folder's private env, then ./toolhost.json, then ~/.toolhost/toolhost.json.
+// the folder's private env, then ./.toolhost/toolhost.json, then the global
+// ~/.toolhost/toolhost.json.
 package main
 
 import (
@@ -17,14 +18,13 @@ import (
 	"github.com/gettoolhost/toolhost-local/internal/core"
 )
 
-const cfgFlagUsage = "config path (default: private env, else ./toolhost.json, else ~/.toolhost/toolhost.json)"
+const cfgFlagUsage = "config path (default: private env, else ./.toolhost/toolhost.json, else ~/.toolhost/toolhost.json)"
 
 func main() {
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
 	}
-	config.MigrateHome(os.Stderr)
 
 	var err error
 	switch os.Args[1] {
@@ -32,7 +32,7 @@ func main() {
 		fs := flag.NewFlagSet("init", flag.ExitOnError)
 		cfg := fs.String("c", "", cfgFlagUsage)
 		project := fs.Bool("project", false, "create this folder's private env under ~/.toolhost/projects/")
-		shared := fs.Bool("shared", false, "create a committable ./toolhost.json (env: token ref, no literal secret)")
+		shared := fs.Bool("shared", false, "create a committable ./.toolhost/toolhost.json (env: token ref, no literal secret)")
 		_ = fs.Parse(os.Args[2:])
 		switch {
 		case *project && *shared:
@@ -183,7 +183,7 @@ func usage() {
 
   toolhost init       write the global config with a fresh bearer token
                       --project = this folder's private env (~/.toolhost/projects/)
-                      --shared  = committable ./toolhost.json (no literal secret)
+                      --shared  = committable ./.toolhost/toolhost.json (no literal secret)
   toolhost discover   list every tool your backends expose (backend__tool)
   toolhost approve    approve qualified tool names, e.g. fs__read_file
                       --requested = approve every pending agent request
@@ -210,6 +210,7 @@ func usage() {
 
 all commands take -c <path> — default resolves nearest scope first:
 this folder's private env (~/.toolhost/projects/<id>/toolhost.json),
-then ./toolhost.json, then ~/.toolhost/toolhost.json (TOOLHOST_HOME honored)
+then ./.toolhost/toolhost.json, then ~/.toolhost/toolhost.json
+(TOOLHOST_HOME honored)
 `)
 }

@@ -72,11 +72,13 @@ func InitProject(w io.Writer) error {
 	return nil
 }
 
-// InitShared creates the committed environment — ./toolhost.json holding an
-// env: token reference, never a literal credential, so the file is safe to
-// check in. Serving HTTP needs TOOLHOST_TOKEN exported; stdio doesn't care.
+// InitShared creates the committed environment — ./.toolhost/toolhost.json
+// holding an env: token reference, never a literal credential, so the file
+// is safe to check in. The hidden namespaced path reads as tooling, never
+// as project content. Serving HTTP needs TOOLHOST_TOKEN exported; stdio
+// doesn't care.
 func InitShared(w io.Writer) error {
-	if err := initFile("toolhost.json", "env:TOOLHOST_TOKEN", w); err != nil {
+	if err := initFile(config.SharedConfigPath, "env:TOOLHOST_TOKEN", w); err != nil {
 		return err
 	}
 	fmt.Fprintln(w, "committable env — set TOOLHOST_TOKEN on machines that serve it over HTTP")

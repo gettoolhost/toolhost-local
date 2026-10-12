@@ -21,10 +21,6 @@ import (
 // the agents' own local > project > user precedence.
 const entryName = "local-gateway"
 
-// legacyEntryName is what attaches wrote before the local-gateway naming —
-// entries under it that are recognizably ours get migrated forward.
-const legacyEntryName = "toolhost"
-
 // Attach registers the gateway with an MCP client — the last mile of
 // install. File-backed clients get an ownership-preserving, compare-and-
 // swap merge of the mcpServers map; CLI-backed clients get their `mcp add`
@@ -185,10 +181,8 @@ func detectProjectFile(t projectTarget) string {
 		return "not plain JSON — check manually: " + t.file
 	}
 	if servers, ok := doc[t.topKey].(map[string]any); ok {
-		for _, k := range []string{entryName, legacyEntryName} {
-			if _, has := servers[k]; has {
-				return "attached — " + t.file
-			}
+		if _, has := servers[entryName]; has {
+			return "attached — " + t.file
 		}
 	}
 	return "not attached — " + t.file
@@ -222,17 +216,15 @@ func detectTarget(name string, t attachTarget) string {
 		return "config present but not plain JSON — check manually: " + path
 	}
 	if servers, ok := doc[t.topKey].(map[string]any); ok {
-		for _, k := range []string{entryName, legacyEntryName} {
-			if _, has := servers[k]; has {
-				return "attached — " + path
-			}
+		if _, has := servers[entryName]; has {
+			return "attached — " + path
 		}
 	}
 	return "not attached — run: toolhost attach " + name
 }
 
 // attachTarget is one MCP client's attach strategy, expressed as data.
-// File targets merge the "toolhost" entry into topKey ("mcpServers", or
+// File targets merge the "local-gateway" entry into topKey ("mcpServers", or
 // "servers" for VS Code) via a compare-and-swap write; CLI targets exec
 // the client's own registrar when we don't own its file format. urlField
 // is the client's name for the endpoint key ("url" for most, "serverUrl"
@@ -356,7 +348,7 @@ var attachTargets = map[string]attachTarget{
 // projectTarget is a client's project-scope attach point — a file in the
 // working folder that the agent reads when it opens the project. The entry
 // is always the tokenless stdio spawn: the spawned gateway resolves the
-// folder's environment by cwd (private env → ./toolhost.json → global).
+// folder's environment by cwd (private env → ./.toolhost/ → global).
 type projectTarget struct {
 	display string
 	file    string // project-relative path
@@ -696,11 +688,11 @@ const (
 
 // planMCPServerEntry reads the client config, decides the attach action,
 // and builds the merged document. Ownership rules: an identical entry is
-// a no-op; an entry we recognize as ours (a stale gateway entry, or a
-// legacy "toolhost" one) is updated/migrated in place, preserving keys
-// the client or user added; an entry under our name we don't recognize is
-// FOREIGN — we refuse rather than clobber someone's server. A conditional
-// target with no file is skipped, never created.
+// a no-op; a stale gateway entry under local-gateway is refreshed in
+// place, preserving keys the client or user added; an entry under our
+// name we don't recognize is FOREIGN — we refuse rather than clobber
+// someone's server. A conditional target with no file is skipped, never
+// created.
 func planMCPServerEntry(path, topKey string, entry map[string]any, conditional bool) (*mergePlan, error) {
 	doc := map[string]any{}
 	raw, err := os.ReadFile(path)
@@ -744,28 +736,20 @@ func planMCPServerEntry(path, topKey string, entry map[string]any, conditional b
 		servers = map[string]any{}
 		doc[topKey] = servers
 	}
-	// The canonical name wins; a legacy "toolhost" entry that is
-	// recognizably ours is treated as the same entry — it migrates to the
-	// canonical name on write. A "toolhost" entry that ISN'T ours is left
-	// untouched (someone else's server under the old name).
+	// Only the canonical name is ours to manage — a "toolhost" entry is
+	// just someone else's server we never touch.
 	var existing map[string]any
-	legacyKey := ""
 	if ev, present := servers[entryName]; present {
 		var ok bool
 		if existing, ok = ev.(map[string]any); !ok {
 			return nil, fmt.Errorf("%s already has a %q server that isn't this gateway — refusing to overwrite it; remove or rename it first", path, entryName)
-		}
-	} else if ev, present := servers[legacyEntryName]; present {
-		if obj, ok := ev.(map[string]any); ok && looksLikeOurs(obj) {
-			existing = obj
-			legacyKey = legacyEntryName
 		}
 	}
 	switch {
 	case existing == nil:
 		servers[entryName] = entry
 		return &mergePlan{action: planCreate, path: path, before: raw, existed: existed, doc: doc}, nil
-	case sameJSON(existing, entry) && legacyKey == "":
+	case sameJSON(existing, entry):
 		return &mergePlan{action: planSkip, path: path, before: raw, existed: existed, doc: doc}, nil
 	case !looksLikeOurs(existing):
 		return nil, fmt.Errorf("%s already has a %q server that isn't this gateway — refusing to overwrite it; remove or rename it first", path, entryName)
@@ -787,12 +771,6 @@ func planMCPServerEntry(path, topKey string, entry map[string]any, conditional b
 				continue
 			}
 			existing[k] = v
-		}
-		if legacyKey != "" {
-			// Migration: the entry lived under the old "toolhost" name —
-			// move it to the canonical one.
-			delete(servers, legacyKey)
-			servers[entryName] = existing
 		}
 		return &mergePlan{action: planUpdate, path: path, before: raw, existed: existed, doc: doc}, nil
 	}

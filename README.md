@@ -19,7 +19,7 @@ From a source checkout with Go 1.26.2. This example backend uses Node.js/`npx`.
 go build -o toolhost ./cmd/toolhost
 ./toolhost init
 # wrote ~/.toolhost/toolhost.json — a private env for this folder is
-# `./toolhost init --project`; a committable ./toolhost.json is
+# `./toolhost init --project`; a committable ./.toolhost/toolhost.json is
 # `./toolhost init --shared`
 ${EDITOR:-vi} ~/.toolhost/toolhost.json
 # add the "fs" backend from the config sample below
@@ -74,7 +74,7 @@ ${EDITOR:-vi} ~/.toolhost/toolhost.json
 }
 ```
 
-- Config resolution, nearest scope first: `-c <path>` → this folder's private env (`~/.toolhost/projects/<id>/toolhost.json`) → `./toolhost.json` → `~/.toolhost/toolhost.json`. Credentials and runtime state live in the env's state dir — a project folder gains no toolhost files unless you `init --shared` one deliberately. Verify an install with `toolhost doctor`.
+- Config resolution, nearest scope first: `-c <path>` → this folder's private env (`~/.toolhost/projects/<id>/toolhost.json`) → `./.toolhost/toolhost.json` → `~/.toolhost/toolhost.json`. Credentials and runtime state live in the env's state dir — a project folder gains no toolhost files unless you `init --shared` one deliberately. Verify an install with `toolhost doctor`.
 - For this `env:` sample, export `TOOLHOST_TOKEN` before `discover` or `serve`; `init` instead generates a usable token directly. Credential references stay literal in saved config and fail closed when unset.
 - Default front door: stateless Streamable HTTP (MCP `2026-07-28`); modern clients can subscribe to list changes. `mode: "stateful"` adds held sessions for pushed `tools/list_changed` with older clients; `serve --stdio` supports spawn-only clients.
 - Upstream `http`/`sse` auth, OAuth grants, federation, and per-backend timeouts are documented below.
