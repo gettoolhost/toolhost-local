@@ -4,9 +4,11 @@
 
 ```bash
 brew install gettoolhost/tap/toolhost      # or: go install github.com/gettoolhost/toolhost-local/cmd/toolhost@latest
+                                           # or: curl -fsSL https://raw.githubusercontent.com/gettoolhost/toolhost-local/main/install.sh | bash
 toolhost init                              # writes ~/.config/toolhost/toolhost.json (or ./toolhost.json via -c)
 toolhost doctor                            # verify: config, token, port, backends, grants, service
-toolhost attach <client>                   # register with your agent: claude · devin · cursor · windsurf · vscode · gemini
+toolhost attach                            # survey every known client — attached or not
+toolhost attach <client>                   # register with your agent — claude · claude-desktop · cline · codex · cursor · devin · gemini · opencode · roo · vscode · windsurf · zed
 toolhost install                           # persist as a user service (launchd / systemd --user)
 ```
 
@@ -36,6 +38,7 @@ toolhost install && toolhost uninstall   # user service
 
 ```bash
 toolhost status          # gateway up: live report; down: config-only view
+toolhost audit           # tail the audit log — -n <count>, -kind <kind>
 curl localhost:8080/healthz
 tail -f toolhost_audit.jsonl
 ```

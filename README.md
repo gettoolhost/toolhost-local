@@ -89,4 +89,4 @@ ${EDITOR:-vi} toolhost.json
 
 ## Deliberately absent
 
-Tenancy, console, rate limiting, schema pinning, credential brokerage beyond the documented upstream auth modes. The scope is one local gateway, one bearer key, and a governed tool surface.
+Tenancy, console, rate limiting, credential brokerage beyond the documented upstream auth modes. The scope is one local gateway, one bearer key, and a governed tool surface.

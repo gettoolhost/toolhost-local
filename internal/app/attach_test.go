@@ -443,6 +443,109 @@ func TestLooksLikeOursRejectsForeignShapes(t *testing.T) {
 	}
 }
 
+// The new entry builders each emit their client's own shape — and never
+// carry credentials in a spawn form.
+func TestClientEntryShapes(t *testing.T) {
+	// opencode: remote = type+url+headers, local = argv-array command.
+	oc := opencodeEntry("http://127.0.0.1:8080/mcp", "th_k", "/bin/toolhost", "/c/toolhost.json", "url", false)
+	if oc["type"] != "remote" || oc["url"] != "http://127.0.0.1:8080/mcp" {
+		t.Fatalf("opencode remote entry: %+v", oc)
+	}
+	if h, ok := oc["headers"].(map[string]string); !ok || h["Authorization"] != "Bearer th_k" {
+		t.Fatalf("opencode remote missing bearer: %+v", oc)
+	}
+	ocl := opencodeEntry("", "", "/bin/toolhost", "/c/toolhost.json", "url", true)
+	if ocl["type"] != "local" {
+		t.Fatalf("opencode local entry: %+v", ocl)
+	}
+	if cmd, ok := ocl["command"].([]string); !ok || cmd[0] != "/bin/toolhost" || cmd[1] != "serve" {
+		t.Fatalf("opencode local command must be an argv array: %+v", ocl)
+	}
+	if _, has := ocl["enabled"]; has {
+		t.Fatal("opencode entry must not write enabled — absent already means enabled")
+	}
+
+	// zed: remote = url+headers (no "type"); local = bare command string.
+	zr := zedEntry("http://127.0.0.1:8080/mcp", "th_k", "/bin/toolhost", "/c", "url", false)
+	if zr["url"] != "http://127.0.0.1:8080/mcp" || zr["type"] != nil {
+		t.Fatalf("zed remote entry: %+v", zr)
+	}
+	zl := zedEntry("", "", "/bin/toolhost", "/c", "url", true)
+	if zl["command"] != "/bin/toolhost" {
+		t.Fatalf("zed local command must be a bare string: %+v", zl)
+	}
+
+	// claude-desktop: stdio shape even when stdio=false — it can't do remote.
+	cd := claudeDesktopEntry("http://ignored/mcp", "th_k", "/bin/toolhost", "/c", "url", false)
+	if cd["command"] != "/bin/toolhost" {
+		t.Fatalf("claude-desktop must emit the spawn form: %+v", cd)
+	}
+	if raw, _ := json.Marshal(cd); strings.Contains(string(raw), "Bearer") {
+		t.Fatal("claude-desktop entry must not carry credentials")
+	}
+}
+
+// opencode's stdio entry puts the whole spawn in "command" as an argv
+// array — looksLikeOurs must still recognize it as ours on re-attach.
+func TestLooksLikeOursArgvCommand(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "opencode.json")
+	// A stale spawn (different config path) plus a client-added key — not
+	// identical, so ownership decides update vs refusal.
+	writeJSON(t, path, `{"mcp": {"toolhost": {"type": "local", "command": ["/opt/toolhost", "serve", "--stdio", "-c", "/old/toolhost.json"], "enabled": false}}}`)
+	p, err := planMCPServerEntry(path, "mcp", opencodeEntry("", "", "/opt/toolhost", "/c/toolhost.json", "url", true), false)
+	if err != nil {
+		t.Fatalf("a stale argv-command entry must update, not refuse: %v", err)
+	}
+	if p.action != planUpdate {
+		t.Fatalf("want update, got %s", p.action)
+	}
+	if err := commitMCPServerEntry(p); err != nil {
+		t.Fatal(err)
+	}
+	got := readDoc(t, path)["mcp"].(map[string]any)["toolhost"].(map[string]any)
+	if got["enabled"] != false {
+		t.Fatalf("update must keep the client's enabled flag: %v", got)
+	}
+
+	// But an argv spawn of a NON-toolhost binary stays foreign.
+	writeJSON(t, path, `{"mcp": {"toolhost": {"type": "local", "command": ["/opt/otheR-mcpd", "serve", "--stdio"]}}}`)
+	if _, err := planMCPServerEntry(path, "mcp", opencodeEntry("", "", "/opt/toolhost", "/c", "url", true), false); err == nil {
+		t.Fatal("a foreign argv spawn must be refused")
+	}
+}
+
+// provisionSkill writes our SKILL.md, refreshes it when stale, and never
+// clobbers a file that isn't ours.
+func TestProvisionSkill(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	tgt := attachTargets["claude"]
+
+	var buf bytes.Buffer
+	provisionSkill(tgt, &buf)
+	path := filepath.Join(home, ".claude", "skills", "toolhost-gateway", "SKILL.md")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("skill not written: %v", err)
+	}
+	if !strings.Contains(string(raw), skillMarker) || !strings.Contains(string(raw), "toolhost__enable") {
+		t.Fatal("skill doc missing marker or control-plane content")
+	}
+
+	// A foreign file at the same path is left alone, with a note.
+	if err := os.WriteFile(path, []byte("user's own notes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	buf.Reset()
+	provisionSkill(tgt, &buf)
+	if raw, _ := os.ReadFile(path); string(raw) != "user's own notes" {
+		t.Fatal("provisionSkill clobbered a file that isn't ours")
+	}
+	if !strings.Contains(buf.String(), "isn't ours") {
+		t.Fatalf("expected an untouched note, got: %s", buf.String())
+	}
+}
+
 // Untouched fields must round-trip exactly — a float64 decode loses
 // precision on ints > 2^53 (nanos timestamps, big IDs in ~/.claude.json).
 func TestCommitPreservesLargeIntegers(t *testing.T) {

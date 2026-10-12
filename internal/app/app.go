@@ -184,6 +184,38 @@ func EditApprovals(ctx context.Context, path string, names []string, approve boo
 	return nil
 }
 
+// ApproveRequested drains the agent's request queue: every name in
+// `requested` goes through the normal approve path — schema-pinned like
+// a hand-typed approval, and Approve consumes the queue entries. This is
+// the human's answer to toolhost__request; it approves exactly what was
+// asked, nothing more.
+func ApproveRequested(ctx context.Context, path string, w io.Writer) error {
+	f, err := config.Load(path)
+	if err != nil {
+		return err
+	}
+	if len(f.Requested) == 0 {
+		fmt.Fprintln(w, "no pending agent requests")
+		return nil
+	}
+	names := make([]string, 0, len(f.Requested))
+	for _, r := range f.Requested {
+		names = append(names, r.Name)
+		fmt.Fprintf(w, "requested %s — %s\n", r.Name, r.Reason)
+	}
+	return EditApprovals(ctx, path, names, true, w)
+}
+
+// auditLogPath resolves the audit log path the way serve does — a
+// relative audit_log anchors to the config file's directory, not cwd.
+func auditLogPath(f *config.File, cfgPath string) string {
+	p := f.AuditLog
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(filepath.Dir(cfgPath), p)
+	}
+	return p
+}
+
 // schemaPins resolves each qualified name to the SchemaHash of the tool
 // that currently exposes it — approval binds to this contract. Each name's
 // candidate owners: the backend matching its namespace, plus passthrough
@@ -537,10 +569,7 @@ func Serve(ctx context.Context, path string, w io.Writer, stdio bool) error {
 	// canonical home only works if companions live beside the config no
 	// matter where serve runs. (The File keeps the literal value so a
 	// load/save cycle never bakes an absolute path into the config.)
-	auditLog := f.AuditLog
-	if !filepath.IsAbs(auditLog) {
-		auditLog = filepath.Join(filepath.Dir(path), auditLog)
-	}
+	auditLog := auditLogPath(f, path)
 	// Create the log's directory — a relative audit_log under a fresh
 	// config dir must not fail the boot.
 	if err := os.MkdirAll(filepath.Dir(auditLog), 0o700); err != nil {
@@ -761,10 +790,7 @@ func (l *liveSet) reload() {
 	}
 
 	l.mu.Lock()
-	reloadAudit := f.AuditLog
-	if !filepath.IsAbs(reloadAudit) {
-		reloadAudit = filepath.Join(filepath.Dir(l.path), reloadAudit)
-	}
+	reloadAudit := auditLogPath(f, l.path)
 	if f.Token != l.token || f.Listen != l.listen || reloadAudit != l.auditLog || f.Mode != l.mode {
 		fmt.Fprintln(l.w, "reload: listen/token/audit_log/mode changes take effect on restart — keeping current values")
 	}

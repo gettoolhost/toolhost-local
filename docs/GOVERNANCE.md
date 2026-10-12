@@ -54,7 +54,8 @@ config file the CLI edits → same persistence, same watcher pickup.
 1. Agent hits a locked tool → `toolhost__request {names, reason}`.
 2. Request lands in `requested` (deduped); `toolhost status` /
    `toolhost__status` surface it.
-3. Human runs `toolhost approve <name>` — the queue entry is consumed.
+3. Human runs `toolhost approve <name>` — or `toolhost approve
+   --requested` to drain the whole queue — and the entry is consumed.
 4. Agent then `toolhost__enable` or the human runs `toolhost enable`.
 
 Requesting never approves. Agents cannot approve their own asks.

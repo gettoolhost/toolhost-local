@@ -23,3 +23,15 @@ jobs:
       - run: go vet ./...
       - run: go build ./...
       - run: go test ./... -count=1
+
+  windows-build:
+    # Build+vet only: `install` is unix-only and the suite has unix
+    # assumptions, but the binary ships for windows so it must compile.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.2"
+      - run: go vet ./...
+      - run: go build ./...

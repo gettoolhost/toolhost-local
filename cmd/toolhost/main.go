@@ -49,11 +49,22 @@ func main() {
 		}
 		err = app.Auth(context.Background(), config.DefaultPath(*cfg), fs.Arg(0), os.Stdout)
 
-	case "approve", "revoke":
-		fs := flag.NewFlagSet(os.Args[1], flag.ExitOnError)
+	case "approve":
+		fs := flag.NewFlagSet("approve", flag.ExitOnError)
+		cfg := fs.String("c", "", cfgFlagUsage)
+		req := fs.Bool("requested", false, "approve every pending agent request")
+		_ = fs.Parse(os.Args[2:])
+		if *req {
+			err = app.ApproveRequested(context.Background(), config.DefaultPath(*cfg), os.Stdout)
+		} else {
+			err = app.EditApprovals(context.Background(), config.DefaultPath(*cfg), fs.Args(), true, os.Stdout)
+		}
+
+	case "revoke":
+		fs := flag.NewFlagSet("revoke", flag.ExitOnError)
 		cfg := fs.String("c", "", cfgFlagUsage)
 		_ = fs.Parse(os.Args[2:])
-		err = app.EditApprovals(context.Background(), config.DefaultPath(*cfg), fs.Args(), os.Args[1] == "approve", os.Stdout)
+		err = app.EditApprovals(context.Background(), config.DefaultPath(*cfg), fs.Args(), false, os.Stdout)
 
 	case "enable", "disable":
 		fs := flag.NewFlagSet(os.Args[1], flag.ExitOnError)
@@ -72,6 +83,14 @@ func main() {
 		}
 		err = app.Logout(config.DefaultPath(*cfg), fs.Arg(0), os.Stdout)
 
+	case "audit":
+		fs := flag.NewFlagSet("audit", flag.ExitOnError)
+		cfg := fs.String("c", "", cfgFlagUsage)
+		limit := fs.Int("n", 20, "number of recent events to show (max 500)")
+		kind := fs.String("kind", "", "only this event kind (tool_call, auth_failed, tool_forbidden, govern, backend_error, backend_up, schema_drift, reload)")
+		_ = fs.Parse(os.Args[2:])
+		err = app.Audit(config.DefaultPath(*cfg), *limit, *kind, os.Stdout)
+
 	case "attach":
 		fs := flag.NewFlagSet("attach", flag.ExitOnError)
 		cfg := fs.String("c", "", cfgFlagUsage)
@@ -80,11 +99,19 @@ func main() {
 		dryRun := fs.Bool("dry-run", false, "show the planned merge without writing")
 		_ = fs.Parse(os.Args[2:])
 		client := ""
-		if fs.NArg() == 1 {
+		switch {
+		case fs.NArg() == 1:
 			client = fs.Arg(0)
-		} else if fs.NArg() > 1 || !*printOnly {
-			fmt.Fprintln(os.Stderr, "usage: toolhost attach [-c config] [--stdio] [--print] [--dry-run] <claude|devin|cursor|windsurf|vscode|gemini>")
+		case fs.NArg() > 1:
+			fmt.Fprintln(os.Stderr, "usage: toolhost attach [-c config] [--stdio] [--print] [--dry-run] [<client>]")
 			os.Exit(2)
+		case !*printOnly:
+			// No client named: survey what's installed and what's
+			// already attached — no config or token needed.
+			err = app.AttachDetect(os.Stdout)
+		}
+		if client == "" && !*printOnly {
+			break
 		}
 		err = app.Attach(config.DefaultPath(*cfg), client, *stdio, *printOnly, *dryRun, os.Stdout)
 
@@ -144,6 +171,7 @@ func usage() {
   toolhost init       write a config with a fresh bearer token
   toolhost discover   list every tool your backends expose (backend__tool)
   toolhost approve    approve qualified tool names, e.g. fs__read_file
+                      --requested = approve every pending agent request
   toolhost revoke     revoke qualified tool names
   toolhost enable     put approved tools on the live surface (no args = all)
                       --only <tools> = surface is exactly these
@@ -151,8 +179,11 @@ func usage() {
   toolhost auth       grant upstream OAuth for a backend (browser flow)
   toolhost logout     drop a backend's stored upstream grant
   toolhost attach     register the gateway with an MCP client
-                      <claude|devin|cursor|windsurf|vscode|gemini>
+                      no args = survey every known client (attached or not)
+                      <claude|claude-desktop|cline|codex|cursor|devin|gemini|opencode|roo|vscode|windsurf|zed>
                       --stdio · --print · --dry-run
+  toolhost audit      tail the audit log (gateway need not be running)
+                      -n 20 · -kind tool_call
   toolhost doctor     check an install end to end (config, token, backends)
   toolhost status     gateway health: backends up/down, counts, requests
   toolhost serve      serve /mcp — Authorization: Bearer <token>

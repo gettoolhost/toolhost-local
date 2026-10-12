@@ -70,7 +70,14 @@ func Attach(cfgPath, client string, stdio, printOnly, dryRun bool, w io.Writer) 
 		fmt.Fprintf(w, "running: %s\n", strings.Join(redactToken(argv, token), " "))
 		cmd := exec.Command(argv[0], argv[1:]...)
 		cmd.Stdout, cmd.Stderr = w, w
-		return cmd.Run()
+		if err := cmd.Run(); err != nil {
+			return err
+		}
+		if client == "codex" && !stdio {
+			fmt.Fprintln(w, "note: codex reads the bearer from $TOOLHOST_TOKEN — export it where codex runs")
+		}
+		provisionSkill(t, w)
+		return nil
 	}
 	path, err := t.path()
 	if err != nil {
@@ -98,6 +105,7 @@ func Attach(cfgPath, client string, stdio, printOnly, dryRun bool, w io.Writer) 
 	switch res.action {
 	case planSkip:
 		fmt.Fprintf(w, "toolhost already attached in %s — nothing to do\n", path)
+		provisionSkill(t, w)
 		return nil
 	case planAbsent:
 		fmt.Fprintf(w, "%s does not exist — %s only merges into an existing config; create it (or install the client) first\n", path, t.display)
@@ -110,7 +118,58 @@ func Attach(cfgPath, client string, stdio, printOnly, dryRun bool, w io.Writer) 
 	if !stdio {
 		fmt.Fprintf(w, "gateway must be serving: toolhost serve (or toolhost install)\n")
 	}
+	provisionSkill(t, w)
 	return nil
+}
+
+// AttachDetect is the no-argument form: survey every known client and
+// report which are attached, which are set up but not attached, and which
+// aren't installed. It touches no gateway config — detection is about the
+// clients, not the endpoint — and writes nothing.
+func AttachDetect(w io.Writer) error {
+	fmt.Fprintln(w, "client              state")
+	for _, name := range sortedKeys(attachTargets) {
+		t := attachTargets[name]
+		state := detectTarget(name, t)
+		fmt.Fprintf(w, "%-20s%s\n", name, state)
+	}
+	fmt.Fprintln(w, "\nattach with: toolhost attach <client> (add --stdio for the spawn form, --dry-run to preview)")
+	return nil
+}
+
+// detectTarget reports one client's attach state without writing anything.
+// File targets are read (never planned — detection must not resolve the
+// gateway token or touch config); CLI targets are probed by binary.
+func detectTarget(name string, t attachTarget) string {
+	if t.cli != nil {
+		if _, err := exec.LookPath(name); err != nil {
+			return "not installed"
+		}
+		return "installed — not attach-detectable via CLI; run: toolhost attach " + name
+	}
+	path, err := t.path()
+	if err != nil {
+		return "unsupported on this platform"
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if t.conditional {
+			return "not set up"
+		}
+		return "no config yet — attach would create " + path
+	}
+	var doc map[string]any
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&doc); err != nil {
+		return "config present but not plain JSON — check manually: " + path
+	}
+	if servers, ok := doc[t.topKey].(map[string]any); ok {
+		if _, has := servers["toolhost"]; has {
+			return "attached — " + path
+		}
+	}
+	return "not attached — run: toolhost attach " + name
 }
 
 // attachTarget is one MCP client's attach strategy, expressed as data.
@@ -131,6 +190,10 @@ type attachTarget struct {
 	// entry builds a nonstandard server entry when serverEntry's shape
 	// doesn't fit the client (e.g. VS Code requires "type" on stdio).
 	entry func(url, token, bin, cfg, urlField string, stdio bool) map[string]any
+	// skillDir is the client's user-level skill directory — the one place
+	// a SKILL.md teaching the toolhost__* control plane can live without
+	// editing files the user owns. Nil: no safe provisioning point.
+	skillDir func() (string, error)
 }
 
 var attachTargets = map[string]attachTarget{
@@ -144,10 +207,12 @@ var attachTargets = map[string]attachTarget{
 		path:        func() (string, error) { return homeJoin(".claude.json") },
 		urlField:    "url",
 		conditional: true,
+		skillDir:    func() (string, error) { return homeJoin(".claude", "skills", "toolhost-gateway") },
 	},
 	"devin": {
-		display: "Devin",
-		cli:     devinArgs,
+		display:  "Devin",
+		cli:      devinArgs,
+		skillDir: func() (string, error) { return homeJoin(".config", "devin", "skills", "toolhost-gateway") },
 	},
 	"cursor": {
 		display:  "Cursor",
@@ -174,6 +239,58 @@ var attachTargets = map[string]attachTarget{
 		urlField:    "httpUrl", // streamable HTTP field name in gemini settings
 		path:        func() (string, error) { return homeJoin(".gemini", "settings.json") },
 		conditional: true, // settings.json is gemini's main config — only merge if present
+	},
+	// Codex keeps its servers in ~/.codex/config.toml — TOML we don't own,
+	// so registration goes through `codex mcp add`. Its HTTP form takes a
+	// bearer env-var NAME rather than the token literal.
+	"codex": {
+		display: "Codex",
+		cli:     codexArgs,
+	},
+	"opencode": {
+		display:     "OpenCode",
+		topKey:      "mcp", // opencode.json namespaces servers under "mcp"
+		urlField:    "url",
+		path:        opencodePath,
+		entry:       opencodeEntry, // "type": "local"/"remote", command is an argv array
+		conditional: true,
+	},
+	"zed": {
+		display:     "Zed",
+		topKey:      "context_servers", // zed's name for the server map
+		urlField:    "url",
+		path:        zedPath,
+		entry:       zedEntry, // command is a bare string beside args, not an argv
+		conditional: true,     // settings.json is zed's whole config — merge only if present
+	},
+	// Cline and Roo are VS Code extensions — their MCP config lives in the
+	// editor's globalStorage, which only exists once the extension does.
+	"cline": {
+		display:  "Cline",
+		topKey:   "mcpServers",
+		urlField: "url",
+		path: func() (string, error) {
+			return vscodeExtSettingsPath("saoudrizwan.claude-dev", "cline_mcp_settings.json")
+		},
+		conditional: true,
+	},
+	"roo": {
+		display:  "Roo Code",
+		topKey:   "mcpServers",
+		urlField: "url",
+		path: func() (string, error) {
+			return vscodeExtSettingsPath("rooveterinaryinc.roo-cline", "mcp_settings.json")
+		},
+		conditional: true,
+	},
+	// Claude Desktop only speaks stdio — the entry is always the spawn
+	// form regardless of --stdio; there is no remote shape to offer.
+	"claude-desktop": {
+		display:     "Claude Desktop",
+		topKey:      "mcpServers",
+		path:        claudeDesktopPath,
+		entry:       claudeDesktopEntry,
+		conditional: true,
 	},
 }
 
@@ -226,6 +343,123 @@ func vscodeMCPPath() (string, error) {
 			return filepath.Join(xdg, "Code", "User", "mcp.json"), nil
 		}
 		return homeJoin(".config", "Code", "User", "mcp.json")
+	}
+}
+
+// opencodePath is OpenCode's global config — an XDG path on every
+// platform it runs on.
+func opencodePath() (string, error) {
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		return filepath.Join(xdg, "opencode", "opencode.json"), nil
+	}
+	return homeJoin(".config", "opencode", "opencode.json")
+}
+
+// opencodeEntry is serverEntry in OpenCode's shape: "local" servers take
+// the spawn as an argv array, "remote" ones a url plus headers. An absent
+// "enabled" means enabled — never write a true that would clobber a
+// user's manual disable on refresh.
+func opencodeEntry(url, token, bin, cfg, urlField string, stdio bool) map[string]any {
+	if stdio {
+		return map[string]any{
+			"type":    "local",
+			"command": []string{bin, "serve", "--stdio", "-c", cfg},
+		}
+	}
+	return map[string]any{
+		"type":    "remote",
+		urlField:  url,
+		"headers": map[string]string{"Authorization": "Bearer " + token},
+	}
+}
+
+// zedPath is Zed's settings.json — XDG on Linux, ~/.config on macOS,
+// APPDATA on Windows.
+func zedPath() (string, error) {
+	if runtime.GOOS == "windows" {
+		appData := os.Getenv("APPDATA")
+		if appData == "" {
+			return "", errors.New("APPDATA unset — cannot locate Zed config")
+		}
+		return filepath.Join(appData, "Zed", "settings.json"), nil
+	}
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		return filepath.Join(xdg, "zed", "settings.json"), nil
+	}
+	return homeJoin(".config", "zed", "settings.json")
+}
+
+// zedEntry is serverEntry in Zed's context_servers shape: a remote server
+// is url plus headers; a local one is a bare command STRING beside args —
+// not the argv form every other client uses.
+func zedEntry(url, token, bin, cfg, urlField string, stdio bool) map[string]any {
+	if stdio {
+		return map[string]any{
+			"command": bin,
+			"args":    []string{"serve", "--stdio", "-c", cfg},
+		}
+	}
+	return map[string]any{
+		urlField:  url,
+		"headers": map[string]string{"Authorization": "Bearer " + token},
+	}
+}
+
+// vscodeExtSettingsPath is where a VS Code extension keeps its MCP
+// settings — inside the editor's per-user globalStorage. Same layout as
+// vscodeMCPPath's root, one extension dir deeper.
+func vscodeExtSettingsPath(extensionID, filename string) (string, error) {
+	var dir string
+	switch runtime.GOOS {
+	case "darwin":
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		dir = filepath.Join(home, "Library", "Application Support", "Code", "User", "globalStorage")
+	case "windows":
+		appData := os.Getenv("APPDATA")
+		if appData == "" {
+			return "", errors.New("APPDATA unset — cannot locate VS Code globalStorage")
+		}
+		dir = filepath.Join(appData, "Code", "User", "globalStorage")
+	default:
+		if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+			dir = filepath.Join(xdg, "Code", "User", "globalStorage")
+		} else {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return "", err
+			}
+			dir = filepath.Join(home, ".config", "Code", "User", "globalStorage")
+		}
+	}
+	return filepath.Join(dir, extensionID, "settings", filename), nil
+}
+
+// claudeDesktopPath is the desktop app's MCP config — macOS and Windows
+// only; there is no Linux build to point at.
+func claudeDesktopPath() (string, error) {
+	switch runtime.GOOS {
+	case "darwin":
+		return homeJoin("Library", "Application Support", "Claude", "claude_desktop_config.json")
+	case "windows":
+		appData := os.Getenv("APPDATA")
+		if appData == "" {
+			return "", errors.New("APPDATA unset — cannot locate Claude Desktop config")
+		}
+		return filepath.Join(appData, "Claude", "claude_desktop_config.json"), nil
+	default:
+		return "", errors.New("Claude Desktop has no Linux build — nothing to attach")
+	}
+}
+
+// claudeDesktopEntry always emits the stdio spawn — the desktop app has
+// no remote transport, so --stdio and the default mean the same thing.
+func claudeDesktopEntry(url, token, bin, cfg, urlField string, stdio bool) map[string]any {
+	return map[string]any{
+		"command": bin,
+		"args":    []string{"serve", "--stdio", "-c", cfg},
 	}
 }
 
@@ -389,17 +623,45 @@ func looksLikeOurs(entry map[string]any) bool {
 			}
 		}
 	}
-	// stdio shape: spawns a toolhost-named binary with serve --stdio —
-	// args alone can't prove ownership either.
-	args, _ := entry["args"].([]any)
+	// stdio shape: an argv that runs a toolhost-named binary with
+	// "serve --stdio" — the spawn alone can't prove ownership either.
+	// command is a string for most clients, an argv array for opencode.
+	argv := entryArgv(entry)
+	if len(argv) == 0 {
+		return false
+	}
 	serve := false
-	for i, a := range args {
-		if a == "serve" && i+1 < len(args) && args[i+1] == "--stdio" {
+	for i, a := range argv {
+		if a == "serve" && i+1 < len(argv) && argv[i+1] == "--stdio" {
 			serve = true
 		}
 	}
-	cmd, hasCmd := entry["command"].(string)
-	return hasCmd && serve && strings.Contains(filepath.Base(cmd), "toolhost")
+	return serve && strings.Contains(filepath.Base(argv[0]), "toolhost")
+}
+
+// entryArgv normalizes a client entry's spawn to one argv: command is a
+// string (most clients) or an argv array (opencode), args appended when
+// present.
+func entryArgv(entry map[string]any) []string {
+	var argv []string
+	switch cmd := entry["command"].(type) {
+	case string:
+		argv = append(argv, cmd)
+	case []any:
+		for _, c := range cmd {
+			if s, ok := c.(string); ok {
+				argv = append(argv, s)
+			}
+		}
+	}
+	if args, ok := entry["args"].([]any); ok {
+		for _, a := range args {
+			if s, ok := a.(string); ok {
+				argv = append(argv, s)
+			}
+		}
+	}
+	return argv
 }
 
 // commitMCPServerEntry writes the planned merge atomically: tmp + rename,
@@ -503,6 +765,104 @@ func devinArgs(url, token, bin, cfg string, stdio bool) []string {
 	}
 	return []string{"devin", "mcp", "add", "-s", "user", "toolhost", url, "-H", "Authorization: Bearer " + token}
 }
+
+// codexArgs registers through `codex mcp add`. The HTTP form never
+// carries the token literal — codex resolves a named env var instead,
+// which is also why the config's env: convention (TOOLHOST_TOKEN) is the
+// name passed.
+func codexArgs(url, token, bin, cfg string, stdio bool) []string {
+	if stdio {
+		return []string{"codex", "mcp", "add", "toolhost", "--", bin, "serve", "--stdio", "-c", cfg}
+	}
+	return []string{"codex", "mcp", "add", "toolhost", "--url", url, "--bearer-token-env-var", "TOOLHOST_TOKEN"}
+}
+
+// provisionSkill drops the control-plane SKILL.md into a client's
+// user-level skill directory — the agent learns toolhost__search/enable/
+// request without the human pasting instructions. The file is wholly
+// ours: it carries a marker, refreshes freely on re-attach, and a
+// markerless existing file is never touched.
+func provisionSkill(t attachTarget, w io.Writer) {
+	if t.skillDir == nil {
+		return
+	}
+	dir, err := t.skillDir()
+	if err != nil {
+		return
+	}
+	path := filepath.Join(dir, "SKILL.md")
+	if raw, err := os.ReadFile(path); err == nil {
+		if !bytes.Contains(raw, []byte(skillMarker)) {
+			fmt.Fprintf(w, "note: %s exists and isn't ours — left untouched\n", path)
+			return
+		}
+		if bytes.Equal(raw, []byte(skillDoc)) {
+			return // already current — silent on re-attach
+		}
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		fmt.Fprintf(w, "note: cannot write %s: %v\n", path, err)
+		return
+	}
+	if err := os.WriteFile(path, []byte(skillDoc), 0o644); err != nil {
+		fmt.Fprintf(w, "note: cannot write %s: %v\n", path, err)
+		return
+	}
+	fmt.Fprintf(w, "wrote %s — %s learns the toolhost__* control plane\n", path, t.display)
+}
+
+// skillMarker identifies a SKILL.md written by attach — the ownership
+// check that lets refreshes overwrite ours and refuse anything else.
+const skillMarker = "<!-- installed by toolhost attach -->"
+
+// skillDoc is the provisioned control-plane skill — the agent-facing
+// manual for the toolhost__* tools. Kept generic: no repo paths, no
+// machine specifics, so the same file serves every client and host.
+const skillDoc = skillMarker + `
+---
+name: toolhost-gateway
+description: How to use a toolhost MCP gateway — one governed /mcp endpoint fronting many MCP servers behind a three-tier tool gate (discovered/approved/enabled). Use when toolhost__* tools appear in the MCP surface, when a needed tool isn't available and a toolhost gateway may front it, or when asked to enable/request tools on a governed gateway.
+---
+
+# toolhost — the governed MCP gateway
+
+toolhost fronts N upstream MCP servers behind one bearer-gated /mcp
+endpoint. Agent-facing tools are namespaced ` + "`backend__tool`" + `. The gate:
+
+` + "```" + `
+discovered → approved (HUMAN policy) → enabled (live surface)
+` + "```" + `
+
+A tool not on the live surface is invisible AND uncallable — by design.
+
+## If toolhost__* tools are in your surface
+
+You are attached to a gateway. Self-serve — do not ask the human to edit
+MCP config:
+
+| tool | use |
+|---|---|
+| ` + "`toolhost__search`" + ` ` + "`{query}`" + ` | catalog search → qualified names + approved/enabled/requested state |
+| ` + "`toolhost__list`" + ` ` + "`{scope}`" + ` | ` + "`enabled`" + ` (default) / ` + "`approved`" + ` / ` + "`all`" + ` |
+| ` + "`toolhost__enable`" + ` ` + "`{names[]}`" + ` | move approved tools onto the live surface NOW |
+| ` + "`toolhost__disable`" + ` ` + "`{names[]}`" + ` | pull tools off NOW (they stay approved) |
+| ` + "`toolhost__call`" + ` ` + "`{name, arguments}`" + ` | call any enabled tool by name — works even if the client ignores tools/list_changed |
+| ` + "`toolhost__request`" + ` ` + "`{names[], reason}`" + ` | file an approval ask — queued for the human, never self-approving |
+| ` + "`toolhost__audit`" + ` ` + "`{limit?, kind?}`" + ` | tail the audit log — what was called, failed, refused |
+| ` + "`toolhost__status`" + ` | read-only gateway health: mode, backends, counts, pending asks |
+
+**The loop**: need a tool → ` + "`search`" + ` → if approved-but-disabled,
+` + "`enable`" + ` it → call it → ` + "`disable`" + ` when done to keep the
+surface lean.
+
+**The boundary**: agents move tools between approved and enabled. Only
+humans approve. If ` + "`search`" + ` shows ` + "`approved: false`" + `,
+file ` + "`toolhost__request`" + ` with a reason — it lands where the
+human sees it (` + "`toolhost status`" + `) — then the human runs
+` + "`toolhost approve <name>`" + ` (or ` + "`toolhost approve --requested`" + `
+to drain the queue). A request approves nothing by itself; never try to
+route around it. Every enable/disable/call/request is audited.
+`
 
 func homeJoin(elem ...string) (string, error) {
 	home, err := os.UserHomeDir()
