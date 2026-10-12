@@ -18,8 +18,10 @@ From a source checkout with Go 1.26.2. This example backend uses Node.js/`npx`.
 ```bash
 go build -o toolhost ./cmd/toolhost
 ./toolhost init
-# wrote toolhost.json
-${EDITOR:-vi} toolhost.json
+# wrote ~/.toolhost/toolhost.json — a private env for this folder is
+# `./toolhost init --project`; a committable ./toolhost.json is
+# `./toolhost init --shared`
+${EDITOR:-vi} ~/.toolhost/toolhost.json
 # add the "fs" backend from the config sample below
 ./toolhost discover
 #   fs__read_file  <upstream description>
@@ -29,8 +31,8 @@ ${EDITOR:-vi} toolhost.json
 # toolhost <version> serving 1 tool on http://127.0.0.1:8080/mcp (...)
 ```
 
-- Point a Streamable HTTP MCP client at `http://127.0.0.1:8080/mcp` with `Authorization: Bearer <token from toolhost.json>`.
-- Tool calls append `tool_call` records to `toolhost_audit.jsonl`; rejected `toolhost__call` requests and failed authentication are recorded too.
+- Point a Streamable HTTP MCP client at `http://127.0.0.1:8080/mcp` with `Authorization: Bearer <token from toolhost.json>` — or attach your agent: `toolhost attach <client>` (user level) / `toolhost attach --project <client>` (this folder). The server entry is always named `local-gateway`.
+- Tool calls append `tool_call` records to `toolhost_audit.jsonl` in the env's state dir; rejected `toolhost__call` requests and failed authentication are recorded too.
 
 | Capability | What ships |
 |---|---|
@@ -72,7 +74,7 @@ ${EDITOR:-vi} toolhost.json
 }
 ```
 
-- Default config location: `./toolhost.json` when present, else `~/.config/toolhost/toolhost.json` (`XDG_CONFIG_HOME` honored); `-c <path>` overrides. Verify an install with `toolhost doctor`; register your agent with `toolhost attach <claude|devin|cursor|windsurf|vscode|gemini>`.
+- Config resolution, nearest scope first: `-c <path>` → this folder's private env (`~/.toolhost/projects/<id>/toolhost.json`) → `./toolhost.json` → `~/.toolhost/toolhost.json`. Credentials and runtime state live in the env's state dir — a project folder gains no toolhost files unless you `init --shared` one deliberately. Verify an install with `toolhost doctor`.
 - For this `env:` sample, export `TOOLHOST_TOKEN` before `discover` or `serve`; `init` instead generates a usable token directly. Credential references stay literal in saved config and fail closed when unset.
 - Default front door: stateless Streamable HTTP (MCP `2026-07-28`); modern clients can subscribe to list changes. `mode: "stateful"` adds held sessions for pushed `tools/list_changed` with older clients; `serve --stdio` supports spawn-only clients.
 - Upstream `http`/`sse` auth, OAuth grants, federation, and per-backend timeouts are documented below.

@@ -6,17 +6,25 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/gettoolhost/toolhost-local/internal/config"
 )
 
 // Audit reads the log without a running gateway — a relative audit_log
-// anchors to the config dir, rotated history backfills, kind filters.
+// anchors to the env's state dir (never the folder holding the config),
+// rotated history backfills, kind filters.
 func TestAuditCLI(t *testing.T) {
+	t.Setenv("TOOLHOST_HOME", t.TempDir())
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "toolhost.json")
 	if err := os.WriteFile(cfg, []byte(`{"token":"th_x","audit_log":"audit.jsonl"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	log := filepath.Join(dir, "audit.jsonl")
+	stateDir := config.StateDir(cfg)
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	log := filepath.Join(stateDir, "audit.jsonl")
 	writeJSON(t, log, `{"ts":"2026-10-12T01:00:00Z","kind":"tool_call","backend":"fs","tool":"fs__read","ms":5}`+"\n"+
 		`{"ts":"2026-10-12T01:00:01Z","kind":"govern","tool":"enable:fs__read"}`+"\n")
 
@@ -54,6 +62,7 @@ func TestAuditCLI(t *testing.T) {
 // ApproveRequested with an empty queue is a clean no-op — it must not
 // dial backends or write the config.
 func TestApproveRequestedEmpty(t *testing.T) {
+	t.Setenv("TOOLHOST_HOME", t.TempDir())
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "toolhost.json")
 	if err := os.WriteFile(cfg, []byte(`{"token":"th_x"}`), 0o600); err != nil {

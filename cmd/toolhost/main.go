@@ -1,7 +1,7 @@
 // toolhost — one governed front door between your agent and your MCP servers.
 //
 // Commands: see usage() — every command takes -c <path>; unset resolves to
-// ./toolhost.json if present, else ~/.config/toolhost/toolhost.json.
+// the folder's private env, then ./toolhost.json, then ~/.toolhost/toolhost.json.
 package main
 
 import (
@@ -17,21 +17,33 @@ import (
 	"github.com/gettoolhost/toolhost-local/internal/core"
 )
 
-const cfgFlagUsage = "config path (default: ./toolhost.json, else ~/.config/toolhost/toolhost.json)"
+const cfgFlagUsage = "config path (default: private env, else ./toolhost.json, else ~/.toolhost/toolhost.json)"
 
 func main() {
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
 	}
+	config.MigrateHome(os.Stderr)
 
 	var err error
 	switch os.Args[1] {
 	case "init":
 		fs := flag.NewFlagSet("init", flag.ExitOnError)
 		cfg := fs.String("c", "", cfgFlagUsage)
+		project := fs.Bool("project", false, "create this folder's private env under ~/.toolhost/projects/")
+		shared := fs.Bool("shared", false, "create a committable ./toolhost.json (env: token ref, no literal secret)")
 		_ = fs.Parse(os.Args[2:])
-		err = app.Init(config.DefaultPath(*cfg), os.Stdout)
+		switch {
+		case *project && *shared:
+			err = fmt.Errorf("--project and --shared are mutually exclusive")
+		case *project:
+			err = app.InitProject(os.Stdout)
+		case *shared:
+			err = app.InitShared(os.Stdout)
+		default:
+			err = app.Init(config.DefaultPath(*cfg), os.Stdout)
+		}
 
 	case "discover":
 		fs := flag.NewFlagSet("discover", flag.ExitOnError)
@@ -95,6 +107,7 @@ func main() {
 		fs := flag.NewFlagSet("attach", flag.ExitOnError)
 		cfg := fs.String("c", "", cfgFlagUsage)
 		stdio := fs.Bool("stdio", false, "attach as a spawned stdio server instead of the HTTP endpoint")
+		project := fs.Bool("project", false, "write the client project-scope file in this folder (local-gateway, stdio spawn)")
 		printOnly := fs.Bool("print", false, "print the mcpServers JSON entry instead of writing it")
 		dryRun := fs.Bool("dry-run", false, "show the planned merge without writing")
 		_ = fs.Parse(os.Args[2:])
@@ -103,7 +116,7 @@ func main() {
 		case fs.NArg() == 1:
 			client = fs.Arg(0)
 		case fs.NArg() > 1:
-			fmt.Fprintln(os.Stderr, "usage: toolhost attach [-c config] [--stdio] [--print] [--dry-run] [<client>]")
+			fmt.Fprintln(os.Stderr, "usage: toolhost attach [-c config] [--project] [--stdio] [--print] [--dry-run] [<client>]")
 			os.Exit(2)
 		case !*printOnly:
 			// No client named: survey what's installed and what's
@@ -113,7 +126,7 @@ func main() {
 		if client == "" && !*printOnly {
 			break
 		}
-		err = app.Attach(config.DefaultPath(*cfg), client, *stdio, *printOnly, *dryRun, os.Stdout)
+		err = app.Attach(config.DefaultPath(*cfg), client, *stdio, *project, *printOnly, *dryRun, os.Stdout)
 
 	case "doctor":
 		fs := flag.NewFlagSet("doctor", flag.ExitOnError)
@@ -168,7 +181,9 @@ func main() {
 func usage() {
 	fmt.Fprint(os.Stderr, `toolhost — one governed front door between your agent and your MCP servers
 
-  toolhost init       write a config with a fresh bearer token
+  toolhost init       write the global config with a fresh bearer token
+                      --project = this folder's private env (~/.toolhost/projects/)
+                      --shared  = committable ./toolhost.json (no literal secret)
   toolhost discover   list every tool your backends expose (backend__tool)
   toolhost approve    approve qualified tool names, e.g. fs__read_file
                       --requested = approve every pending agent request
@@ -181,6 +196,7 @@ func usage() {
   toolhost attach     register the gateway with an MCP client
                       no args = survey every known client (attached or not)
                       <claude|claude-desktop|cline|codex|cursor|devin|gemini|opencode|roo|vscode|windsurf|zed>
+                      --project = write this folder's project file (local-gateway)
                       --stdio · --print · --dry-run
   toolhost audit      tail the audit log (gateway need not be running)
                       -n 20 · -kind tool_call
@@ -192,7 +208,8 @@ func usage() {
   toolhost uninstall  remove the service
   toolhost version
 
-all commands take -c <path> — default: ./toolhost.json if present,
-else ~/.config/toolhost/toolhost.json (XDG_CONFIG_HOME honored)
+all commands take -c <path> — default resolves nearest scope first:
+this folder's private env (~/.toolhost/projects/<id>/toolhost.json),
+then ./toolhost.json, then ~/.toolhost/toolhost.json (TOOLHOST_HOME honored)
 `)
 }

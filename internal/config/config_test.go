@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -183,10 +184,14 @@ func TestEnvRefs(t *testing.T) {
 		t.Fatalf("Resolved mutated the receiver: %q", f.Backends["b"].Auth.Token)
 	}
 
-	// Unset env → fail closed at load.
+	// Unset env → fail closed at resolution — load stays lazy so a
+	// committed env: reference can live on machines that don't serve.
 	bad := &File{Mode: ModeStateless, Token: "env:TH_TEST_MISSING"}
-	if err := bad.validate(); err == nil {
-		t.Fatal("unset env var should fail validation")
+	if err := bad.validate(); err != nil {
+		t.Fatalf("validate must not resolve the token: %v", err)
+	}
+	if _, err := bad.ResolvedToken(); err == nil {
+		t.Fatal("unset env var should fail resolution")
 	}
 
 	// Save round-trips the reference — a resolved secret can never land
@@ -208,43 +213,68 @@ func TestEnvRefs(t *testing.T) {
 }
 
 func TestRequestTools(t *testing.T) {
-	f := &File{Approved: []string{"b__ok"}}
+	// The queue lives in the env's state dir, not the config — a
+	// committable toolhost.json must never get runtime writes.
+	t.Setenv("TOOLHOST_HOME", t.TempDir())
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "toolhost.json")
+	f := &File{Token: "t", Approved: []string{"b__ok"}}
+	if err := f.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	approved := map[string]bool{"b__ok": true}
 
 	// Qualified + unapproved → queued with the reason.
-	added, err := f.RequestTools("need it", "b__want")
+	added, err := AppendRequests(cfg, approved, "need it", "b__want")
 	if err != nil || len(added) != 1 {
 		t.Fatalf("request: %v %v", added, err)
 	}
-	if !f.RequestedSet()["b__want"] || f.Requested[0].Reason != "need it" {
-		t.Fatalf("request not recorded: %+v", f.Requested)
+	reqs, err := LoadRequests(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !RequestSet(reqs)["b__want"] || reqs[0].Reason != "need it" {
+		t.Fatalf("request not recorded: %+v", reqs)
+	}
+	// Nothing landed in the config file.
+	reloaded, err := Load(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded.Requested) != 0 {
+		t.Fatalf("request leaked into config: %+v", reloaded.Requested)
 	}
 
 	// Deduped — a second ask adds nothing.
-	added, err = f.RequestTools("again", "b__want")
-	if err != nil || len(added) != 0 || len(f.Requested) != 1 {
-		t.Fatalf("dedup: %+v %v", f.Requested, err)
+	added, err = AppendRequests(cfg, approved, "again", "b__want")
+	if err != nil || len(added) != 0 {
+		t.Fatalf("dedup: %v %v", added, err)
+	}
+	if reqs, _ := LoadRequests(cfg); len(reqs) != 1 {
+		t.Fatalf("dedup: %+v", reqs)
 	}
 
 	// Bad names and already-approved tools are refused.
-	if _, err := f.RequestTools("", "badname"); err == nil {
+	if _, err := AppendRequests(cfg, approved, "", "badname"); err == nil {
 		t.Fatal("unqualified name accepted")
 	}
-	if _, err := f.RequestTools("", "b__ok"); err == nil || !strings.Contains(err.Error(), "already approved") {
+	if _, err := AppendRequests(cfg, approved, "", "b__ok"); err == nil || !strings.Contains(err.Error(), "already approved") {
 		t.Fatalf("approved name accepted: %v", err)
 	}
 
-	// A request never widens the gate on its own.
-	if f.IsApproved("b__want") || f.IsEnabled("b__want") {
-		t.Fatal("a request must not approve or enable")
+	// Approving consumes the request — the ask is answered.
+	approved["b__want"] = true
+	RemoveAnsweredRequests(cfg, approved)
+	if reqs, _ := LoadRequests(cfg); len(reqs) != 0 {
+		t.Fatalf("approve should consume the request: %+v", reqs)
 	}
 
-	// Approve consumes the request — the ask is answered.
 	pin := "sha256:" + strings.Repeat("0", 64)
 	if _, err := f.Approve(map[string]string{"b__want": pin}); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.Requested) != 0 || !f.IsApproved("b__want") {
-		t.Fatalf("approve should consume the request: %+v", f.Requested)
+	if !f.IsApproved("b__want") {
+		t.Fatal("approve lost the name")
 	}
 	if f.ApprovedSchemas["b__want"] != pin {
 		t.Fatalf("approve should pin the reviewed schema: %+v", f.ApprovedSchemas)
@@ -268,15 +298,59 @@ func TestRequestTools(t *testing.T) {
 	}
 }
 
+// Legacy `requested` in the config drains into the state file once —
+// the config is rewritten without it.
+func TestRequestsDrainFromConfig(t *testing.T) {
+	t.Setenv("TOOLHOST_HOME", t.TempDir())
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "toolhost.json")
+	f := &File{Token: "t", Requested: []Request{{Name: "b__old", Reason: "legacy"}}}
+	if err := f.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	reqs, err := LoadRequests(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reqs) != 1 || reqs[0].Name != "b__old" {
+		t.Fatalf("drain lost the request: %+v", reqs)
+	}
+	reloaded, err := Load(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded.Requested) != 0 {
+		t.Fatalf("legacy requested still in config: %+v", reloaded.Requested)
+	}
+}
+
 func TestDefaultPath(t *testing.T) {
 	// Explicit -c always wins.
 	if got := DefaultPath("/tmp/x.json"); got != "/tmp/x.json" {
 		t.Fatalf("explicit path should win, got %q", got)
 	}
 
-	// A project-local config beats the canonical home.
+	home := t.TempDir()
+	t.Setenv("TOOLHOST_HOME", home)
 	dir := t.TempDir()
 	t.Chdir(dir)
+
+	// A private env keyed for this folder beats everything.
+	priv := ProjectConfigPath(dir)
+	if err := os.MkdirAll(filepath.Dir(priv), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(priv, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := DefaultPath(""); got != priv {
+		t.Fatalf("private env should win, got %q", got)
+	}
+	if err := os.Remove(priv); err != nil {
+		t.Fatal(err)
+	}
+
+	// A committed ./toolhost.json beats the canonical home.
 	if err := os.WriteFile(filepath.Join(dir, "toolhost.json"), []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -288,11 +362,76 @@ func TestDefaultPath(t *testing.T) {
 	if err := os.Remove(filepath.Join(dir, "toolhost.json")); err != nil {
 		t.Fatal(err)
 	}
-	home := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", home)
-	want := filepath.Join(home, "toolhost", "toolhost.json")
+	want := filepath.Join(home, "toolhost.json")
 	if got := DefaultPath(""); got != want {
 		t.Fatalf("want config home %q, got %q", want, got)
+	}
+}
+
+// MigrateHome moves a legacy ~/.config/toolhost tree to ~/.toolhost once;
+// a pre-existing new home is left alone (never merged, never clobbered).
+func TestMigrateHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("TOOLHOST_HOME", "") // explicit home only — migration is for the default path
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+
+	legacy := filepath.Join(xdg, "toolhost")
+	if err := os.MkdirAll(legacy, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacy, "toolhost.json"), []byte(`{"token":"th_x"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	MigrateHome(&buf)
+	want := filepath.Join(home, ".toolhost", "toolhost.json")
+	if _, err := os.Stat(want); err != nil {
+		t.Fatalf("legacy home not migrated: %v\n%s", err, buf.String())
+	}
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Fatal("legacy dir still present after migration")
+	}
+
+	// Second run is a no-op; an existing new home is never clobbered.
+	buf.Reset()
+	MigrateHome(&buf)
+	if buf.String() != "" {
+		t.Fatalf("migration must be silent once done, got %q", buf.String())
+	}
+}
+
+// StateDir: inside-home configs keep state beside themselves; a config
+// anywhere else gets a keyed dir under projects/ so its folder stays pure.
+func TestStateDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TOOLHOST_HOME", home)
+
+	// Global config → its own dir.
+	if got := StateDir(filepath.Join(home, "toolhost.json")); got != home {
+		t.Fatalf("global state dir: %q", got)
+	}
+	// Private env → its own dir.
+	priv := filepath.Join(home, "projects", "x-abc12345", "toolhost.json")
+	if got := StateDir(priv); got != filepath.Dir(priv) {
+		t.Fatalf("private env state dir: %q", got)
+	}
+	// A config outside home → keyed dir under projects/, never beside it.
+	dir := t.TempDir()
+	got := StateDir(filepath.Join(dir, "toolhost.json"))
+	want := filepath.Join(home, "projects", ProjectKey(dir))
+	if got != want {
+		t.Fatalf("external config state dir: want %q, got %q", want, got)
+	}
+	// The key is stable and collision-safe.
+	k1, k2 := ProjectKey(dir), ProjectKey(filepath.Join(dir, "..", filepath.Base(dir)))
+	if k1 != k2 {
+		t.Fatalf("same dir different spell → different keys: %q vs %q", k1, k2)
+	}
+	other := t.TempDir()
+	if ProjectKey(other) == k1 {
+		t.Fatal("distinct dirs produced the same key")
 	}
 }
 

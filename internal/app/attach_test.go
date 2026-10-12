@@ -79,7 +79,7 @@ func TestPlanMergeEntry(t *testing.T) {
 	}
 	doc := readDoc(t, path)
 	servers := doc["mcpServers"].(map[string]any)
-	if servers["other"] == nil || servers["toolhost"] == nil {
+	if servers["other"] == nil || servers["local-gateway"] == nil {
 		t.Fatalf("merge lost entries: %v", servers)
 	}
 	if doc["theme"] != "dark" {
@@ -95,7 +95,8 @@ func TestPlanMergeEntry(t *testing.T) {
 		t.Fatalf("re-attach should be a no-op, got %s", p2.action)
 	}
 
-	// A stale entry of ours updates in place and keeps client-added keys.
+	// A stale entry of ours under the legacy "toolhost" name updates and
+	// migrates to "local-gateway", keeping client-added keys.
 	writeJSON(t, path, `{"mcpServers": {"toolhost": {"url": "http://old/mcp", "headers": {"Authorization": "Bearer old"}, "disabled": true}}}`)
 	fresh := serverEntry("http://127.0.0.1:9999/mcp", "th_new", "", "", "url", false)
 	p3, err := planMCPServerEntry(path, "mcpServers", fresh, false)
@@ -108,7 +109,14 @@ func TestPlanMergeEntry(t *testing.T) {
 	if err := commitMCPServerEntry(p3); err != nil {
 		t.Fatal(err)
 	}
-	got := readDoc(t, path)["mcpServers"].(map[string]any)["toolhost"].(map[string]any)
+	servers = readDoc(t, path)["mcpServers"].(map[string]any)
+	got, ok := servers["local-gateway"].(map[string]any)
+	if !ok {
+		t.Fatalf("legacy entry did not migrate to local-gateway: %v", servers)
+	}
+	if servers["toolhost"] != nil {
+		t.Fatalf("migration left the legacy key behind: %v", servers)
+	}
 	if got["url"] != "http://127.0.0.1:9999/mcp" || got["disabled"] != true {
 		t.Fatalf("update must refresh ours and keep extras: %v", got)
 	}
@@ -117,12 +125,34 @@ func TestPlanMergeEntry(t *testing.T) {
 func TestPlanForeignEntryRefused(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "mcp.json")
-	// A "toolhost" entry that isn't ours — no bearer + endpoint, no
+	// A "local-gateway" entry that isn't ours — no bearer + endpoint, no
 	// serve --stdio spawn. Overwriting would destroy someone's config.
-	writeJSON(t, path, `{"mcpServers": {"toolhost": {"command": "/opt/other/toolhostd"}}}`)
+	writeJSON(t, path, `{"mcpServers": {"local-gateway": {"command": "/opt/other/gw"}}}`)
 	entry := serverEntry("http://127.0.0.1:8188/mcp", "th_k", "", "", "url", false)
 	if _, err := planMCPServerEntry(path, "mcpServers", entry, false); err == nil {
-		t.Fatal("a foreign toolhost entry must be refused, not clobbered")
+		t.Fatal("a foreign local-gateway entry must be refused, not clobbered")
+	}
+
+	// A foreign "toolhost" entry is a different name — we write
+	// local-gateway beside it and leave it alone.
+	writeJSON(t, path, `{"mcpServers": {"toolhost": {"command": "/opt/other/toolhostd"}}}`)
+	p, err := planMCPServerEntry(path, "mcpServers", entry, false)
+	if err != nil {
+		t.Fatalf("a foreign toolhost entry must not block us: %v", err)
+	}
+	if p.action != planCreate {
+		t.Fatalf("want create beside the foreign entry, got %s", p.action)
+	}
+	if err := commitMCPServerEntry(p); err != nil {
+		t.Fatal(err)
+	}
+	servers := readDoc(t, path)["mcpServers"].(map[string]any)
+	if servers["local-gateway"] == nil {
+		t.Fatalf("local-gateway not created: %v", servers)
+	}
+	foreign, ok := servers["toolhost"].(map[string]any)
+	if !ok || foreign["command"] != "/opt/other/toolhostd" {
+		t.Fatalf("foreign toolhost entry was clobbered: %v", servers)
 	}
 }
 
@@ -181,7 +211,7 @@ func TestPlanTransportSwitchDropsStaleKeys(t *testing.T) {
 	if err := commitMCPServerEntry(p); err != nil {
 		t.Fatal(err)
 	}
-	got := readDoc(t, path)["mcpServers"].(map[string]any)["toolhost"].(map[string]any)
+	got := readDoc(t, path)["mcpServers"].(map[string]any)["local-gateway"].(map[string]any)
 	for _, stale := range []string{"command", "args"} {
 		if got[stale] != nil {
 			t.Fatalf("transport switch left stale %q: %v", stale, got)
@@ -191,7 +221,8 @@ func TestPlanTransportSwitchDropsStaleKeys(t *testing.T) {
 		t.Fatalf("update must write ours and keep extras: %v", got)
 	}
 
-	// And the reverse — http → stdio drops url/headers.
+	// And the reverse — http → stdio drops url/headers. (Legacy key again:
+	// the migrated entry lands under local-gateway either way.)
 	writeJSON(t, path, `{"mcpServers": {"toolhost": {"type": "http", "url": "http://x/mcp", "headers": {"Authorization": "Bearer t"}}}}`)
 	sp := serverEntry("", "", "/b/toolhost", "/c.json", "url", true)
 	p2, err := planMCPServerEntry(path, "mcpServers", sp, false)
@@ -201,7 +232,7 @@ func TestPlanTransportSwitchDropsStaleKeys(t *testing.T) {
 	if err := commitMCPServerEntry(p2); err != nil {
 		t.Fatal(err)
 	}
-	got = readDoc(t, path)["mcpServers"].(map[string]any)["toolhost"].(map[string]any)
+	got = readDoc(t, path)["mcpServers"].(map[string]any)["local-gateway"].(map[string]any)
 	for _, stale := range []string{"url", "headers"} {
 		if got[stale] != nil {
 			t.Fatalf("http→stdio left stale %q: %v", stale, got)
@@ -267,19 +298,34 @@ func TestPlanNullConfig(t *testing.T) {
 	}
 }
 
-// A "toolhost" key that isn't an object is foreign data — refuse, never
-// silently overwrite it.
-func TestPlanNonObjectToolhostRefused(t *testing.T) {
+// A "local-gateway" key that isn't an object is foreign data — refuse,
+// never silently overwrite it. A non-object "toolhost" is someone else's
+// server too, but it's a different name — we coexist, we don't rewrite it.
+func TestPlanNonObjectEntryRefused(t *testing.T) {
 	for _, body := range []string{
-		`{"mcpServers": {"toolhost": "http://someone-else"}}`,
-		`{"mcpServers": {"toolhost": false}}`,
-		`{"mcpServers": {"toolhost": ["x"]}}`,
+		`{"mcpServers": {"local-gateway": "http://someone-else"}}`,
+		`{"mcpServers": {"local-gateway": false}}`,
+		`{"mcpServers": {"local-gateway": ["x"]}}`,
 	} {
 		path := filepath.Join(t.TempDir(), "mcp.json")
 		writeJSON(t, path, body)
 		if _, err := planMCPServerEntry(path, "mcpServers", serverEntry("http://x/mcp", "t", "", "", "url", false), false); err == nil {
-			t.Fatalf("non-object toolhost entry must be refused: %s", body)
+			t.Fatalf("non-object local-gateway entry must be refused: %s", body)
 		}
+	}
+	// Non-object legacy key — leave it, write ours beside it.
+	path := filepath.Join(t.TempDir(), "mcp.json")
+	writeJSON(t, path, `{"mcpServers": {"toolhost": "http://someone-else"}}`)
+	p, err := planMCPServerEntry(path, "mcpServers", serverEntry("http://x/mcp", "t", "", "", "url", false), false)
+	if err != nil {
+		t.Fatalf("foreign legacy entry must not block us: %v", err)
+	}
+	if err := commitMCPServerEntry(p); err != nil {
+		t.Fatal(err)
+	}
+	servers := readDoc(t, path)["mcpServers"].(map[string]any)
+	if servers["local-gateway"] == nil || servers["toolhost"] != "http://someone-else" {
+		t.Fatalf("must create ours and preserve theirs: %v", servers)
 	}
 }
 
@@ -318,7 +364,7 @@ func TestPlanWritesThroughSymlink(t *testing.T) {
 		t.Fatal("attach severed the symlink — must write through it")
 	}
 	doc := readDoc(t, real)
-	if doc["mcpServers"].(map[string]any)["toolhost"] == nil {
+	if doc["mcpServers"].(map[string]any)["local-gateway"] == nil {
 		t.Fatal("entry missing after symlink write-through")
 	}
 }
@@ -336,7 +382,7 @@ func TestPlanTopKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	doc := readDoc(t, path)
-	if doc["servers"].(map[string]any)["toolhost"] == nil || doc["mcpServers"] != nil {
+	if doc["servers"].(map[string]any)["local-gateway"] == nil || doc["mcpServers"] != nil {
 		t.Fatalf("entry must land under \"servers\": %v", doc)
 	}
 }
@@ -394,7 +440,7 @@ func TestUpdatePreservesClientHeaderKeys(t *testing.T) {
 	if err := commitMCPServerEntry(p); err != nil {
 		t.Fatal(err)
 	}
-	h := readDoc(t, path)["mcpServers"].(map[string]any)["toolhost"].(map[string]any)["headers"].(map[string]any)
+	h := readDoc(t, path)["mcpServers"].(map[string]any)["local-gateway"].(map[string]any)["headers"].(map[string]any)
 	if h["X-Team"] != "keep-me" {
 		t.Fatalf("update dropped a client header key: %v", h)
 	}
@@ -414,7 +460,7 @@ func TestDryRunRedactsBearer(t *testing.T) {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer
-	if err := Attach(cfg, "cursor", false, false, true, &buf); err != nil {
+	if err := Attach(cfg, "cursor", false, false, false, true, &buf); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(buf.String(), "th_sekrit") {
@@ -431,13 +477,13 @@ func TestDryRunRedactsBearer(t *testing.T) {
 func TestLooksLikeOursRejectsForeignShapes(t *testing.T) {
 	// Generic authenticated HTTP server — bearer alone proves nothing.
 	path := filepath.Join(t.TempDir(), "mcp.json")
-	writeJSON(t, path, `{"mcpServers": {"toolhost": {"url": "https://api.other.io/v1", "headers": {"Authorization": "Bearer their-key"}}}}`)
+	writeJSON(t, path, `{"mcpServers": {"local-gateway": {"url": "https://api.other.io/v1", "headers": {"Authorization": "Bearer their-key"}}}}`)
 	if _, err := planMCPServerEntry(path, "mcpServers", serverEntry("http://x/mcp", "th_k", "", "", "url", false), false); err == nil {
 		t.Fatal("a foreign bearer+url entry must be refused, not refreshed")
 	}
 	// Another binary that happens to take serve --stdio args.
 	path2 := filepath.Join(t.TempDir(), "mcp.json")
-	writeJSON(t, path2, `{"mcpServers": {"toolhost": {"command": "/opt/otheR-mcpd", "args": ["serve", "--stdio"]}}}`)
+	writeJSON(t, path2, `{"mcpServers": {"local-gateway": {"command": "/opt/otheR-mcpd", "args": ["serve", "--stdio"]}}}`)
 	if _, err := planMCPServerEntry(path2, "mcpServers", serverEntry("", "", "/bin/toolhost", "/c", "url", true), false); err == nil {
 		t.Fatal("a foreign serve --stdio spawn must be refused")
 	}
@@ -502,13 +548,14 @@ func TestLooksLikeOursArgvCommand(t *testing.T) {
 	if err := commitMCPServerEntry(p); err != nil {
 		t.Fatal(err)
 	}
-	got := readDoc(t, path)["mcp"].(map[string]any)["toolhost"].(map[string]any)
+	got := readDoc(t, path)["mcp"].(map[string]any)["local-gateway"].(map[string]any)
 	if got["enabled"] != false {
 		t.Fatalf("update must keep the client's enabled flag: %v", got)
 	}
 
-	// But an argv spawn of a NON-toolhost binary stays foreign.
-	writeJSON(t, path, `{"mcp": {"toolhost": {"type": "local", "command": ["/opt/otheR-mcpd", "serve", "--stdio"]}}}`)
+	// But an argv spawn of a NON-toolhost binary under our name stays
+	// foreign.
+	writeJSON(t, path, `{"mcp": {"local-gateway": {"type": "local", "command": ["/opt/otheR-mcpd", "serve", "--stdio"]}}}`)
 	if _, err := planMCPServerEntry(path, "mcp", opencodeEntry("", "", "/opt/toolhost", "/c", "url", true), false); err == nil {
 		t.Fatal("a foreign argv spawn must be refused")
 	}

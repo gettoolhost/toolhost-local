@@ -49,6 +49,41 @@ const (
 // overwrite — the token is a credential, and clobbering it silently is how
 // "my gateway stopped working" bugs are born.
 func Init(path string, w io.Writer) error {
+	token, err := newToken()
+	if err != nil {
+		return err
+	}
+	return initFile(path, token, w)
+}
+
+// InitProject creates the private environment for the current folder —
+// keyed under the user's home (~/.toolhost/projects/<id>) so the folder
+// itself stays clean: nothing to commit, nothing to leak.
+func InitProject(w io.Writer) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	path := config.ProjectConfigPath(cwd)
+	if err := Init(path, w); err != nil {
+		return err
+	}
+	fmt.Fprintln(w, "this folder now has a private environment — agents serving here pick it up automatically")
+	return nil
+}
+
+// InitShared creates the committed environment — ./toolhost.json holding an
+// env: token reference, never a literal credential, so the file is safe to
+// check in. Serving HTTP needs TOOLHOST_TOKEN exported; stdio doesn't care.
+func InitShared(w io.Writer) error {
+	if err := initFile("toolhost.json", "env:TOOLHOST_TOKEN", w); err != nil {
+		return err
+	}
+	fmt.Fprintln(w, "committable env — set TOOLHOST_TOKEN on machines that serve it over HTTP")
+	return nil
+}
+
+func initFile(path, token string, w io.Writer) error {
 	if _, err := os.Stat(path); err == nil {
 		return fmt.Errorf("%s already exists (refusing to overwrite — delete it first if you mean it)", path)
 	}
@@ -56,10 +91,6 @@ func Init(path string, w io.Writer) error {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return fmt.Errorf("create config dir %s: %w", dir, err)
 		}
-	}
-	token, err := newToken()
-	if err != nil {
-		return err
 	}
 	f := &config.File{
 		Listen:   config.DefaultListen,
@@ -173,6 +204,9 @@ func EditApprovals(ctx context.Context, path string, names []string, approve boo
 	if err := f.Save(path); err != nil {
 		return err
 	}
+	if approve {
+		config.RemoveAnsweredRequests(path, f.ApprovedSet())
+	}
 	verb := "approved"
 	if !approve {
 		verb = "revoked"
@@ -190,16 +224,16 @@ func EditApprovals(ctx context.Context, path string, names []string, approve boo
 // the human's answer to toolhost__request; it approves exactly what was
 // asked, nothing more.
 func ApproveRequested(ctx context.Context, path string, w io.Writer) error {
-	f, err := config.Load(path)
+	reqs, err := config.LoadRequests(path)
 	if err != nil {
 		return err
 	}
-	if len(f.Requested) == 0 {
+	if len(reqs) == 0 {
 		fmt.Fprintln(w, "no pending agent requests")
 		return nil
 	}
-	names := make([]string, 0, len(f.Requested))
-	for _, r := range f.Requested {
+	names := make([]string, 0, len(reqs))
+	for _, r := range reqs {
 		names = append(names, r.Name)
 		fmt.Fprintf(w, "requested %s — %s\n", r.Name, r.Reason)
 	}
@@ -207,11 +241,12 @@ func ApproveRequested(ctx context.Context, path string, w io.Writer) error {
 }
 
 // auditLogPath resolves the audit log path the way serve does — a
-// relative audit_log anchors to the config file's directory, not cwd.
+// relative audit_log anchors to the environment's state dir, not the
+// config file's directory, so a committed config leaves no artifacts.
 func auditLogPath(f *config.File, cfgPath string) string {
 	p := f.AuditLog
 	if !filepath.IsAbs(p) {
-		p = filepath.Join(filepath.Dir(cfgPath), p)
+		p = filepath.Join(config.StateDir(cfgPath), p)
 	}
 	return p
 }
@@ -442,7 +477,10 @@ func Status(ctx context.Context, path string, w io.Writer) error {
 
 	token, err := f.ResolvedToken()
 	if err != nil {
-		return err
+		// Tokenless env (e.g. a committed project config) — the live
+		// probe needs the bearer, so fall back to the config view.
+		printConfigStatus(f, path, w)
+		return nil
 	}
 	client := mcp.NewClient(&mcp.Implementation{Name: "toolhost-cli", Version: core.Version}, nil)
 	connCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -531,8 +569,10 @@ func printConfigStatus(f *config.File, path string, w io.Writer) {
 	} else {
 		fmt.Fprintf(w, "tools:   %d approved (all enabled — no allowlist)\n", len(f.ApprovedSet()))
 	}
-	for _, r := range f.Requested {
-		fmt.Fprintf(w, "requested %s — %s\n", r.Name, r.Reason)
+	if reqs, err := config.LoadRequests(path); err == nil {
+		for _, r := range reqs {
+			fmt.Fprintf(w, "requested %s — %s\n", r.Name, r.Reason)
+		}
 	}
 	if store, err := oauth.OpenStore(oauth.StorePath(path)); err == nil {
 		for _, name := range sortedKeys(f.Backends) {
@@ -557,17 +597,23 @@ func Serve(ctx context.Context, path string, w io.Writer, stdio bool) error {
 	if err != nil {
 		return err
 	}
-	token, err := f.ResolvedToken()
-	if err != nil {
-		return err
-	}
-	if !stdio && token == "" {
-		return fmt.Errorf("config %s has no token — run toolhost init or set \"token\"", path)
+	// The bearer only gates the HTTP front door — stdio's pipe is the
+	// boundary, so a tokenless (committed) env can serve stdio freely.
+	var token string
+	if !stdio {
+		var err error
+		token, err = f.ResolvedToken()
+		if err != nil {
+			return err
+		}
+		if token == "" {
+			return fmt.Errorf("config %s has no token — run toolhost init or set \"token\"", path)
+		}
 	}
 
-	// A relative audit_log anchors to the config file's directory — the
-	// canonical home only works if companions live beside the config no
-	// matter where serve runs. (The File keeps the literal value so a
+	// A relative audit_log anchors to the environment's state dir — state
+	// never lands beside a config the folder might commit. (The File keeps
+	// the literal value so a
 	// load/save cycle never bakes an absolute path into the config.)
 	auditLog := auditLogPath(f, path)
 	// Create the log's directory — a relative audit_log under a fresh
@@ -604,8 +650,8 @@ func Serve(ctx context.Context, path string, w io.Writer, stdio bool) error {
 		sink.Record(core.Event{TS: time.Now(), Kind: core.EventBackendError, Backend: s.Backend, Tool: s.Tool, Err: "skipped: " + s.Reason})
 		fmt.Fprintf(w, "skipped %s__%s: %s\n", s.Backend, s.Tool, s.Reason)
 	}
-	if len(f.Requested) > 0 {
-		fmt.Fprintf(w, "%d pending agent request(s) — review with: toolhost status\n", len(f.Requested))
+	if reqs, err := config.LoadRequests(path); err == nil && len(reqs) > 0 {
+		fmt.Fprintf(w, "%d pending agent request(s) — review with: toolhost status\n", len(reqs))
 	}
 
 	live := &liveSet{
@@ -1155,7 +1201,8 @@ func (l *liveSet) catalog() []core.ToolInfo {
 	}
 	approved := f.ApprovedSet()
 	enSet, hasEn := f.EnabledSet()
-	requested := f.RequestedSet()
+	reqs, _ := config.LoadRequests(l.path)
+	requested := config.RequestSet(reqs)
 	var out []core.ToolInfo
 	for _, ns := range sortedKeys(l.ups) {
 		for _, t := range l.ups[ns].Tools() {
@@ -1263,9 +1310,9 @@ func (l *liveSet) metaDisable(ctx context.Context, names []string) ([]string, er
 }
 
 // metaRequest is the agent's formal ask: queue qualified names in the
-// config's `requested` list. It writes the same file the CLI edits — the
-// watcher picks it up — but a request never widens the surface; only a
-// human `toolhost approve` does.
+// env's state-dir request file — the config itself is never touched, so
+// a committed toolhost.json stays a pure declaration. A request never
+// widens the surface; only a human `toolhost approve` does.
 func (l *liveSet) metaRequest(_ context.Context, names []string, reason string) ([]string, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -1273,11 +1320,8 @@ func (l *liveSet) metaRequest(_ context.Context, names []string, reason string) 
 	if err != nil {
 		return nil, err
 	}
-	queued, err := f.RequestTools(reason, names...)
+	queued, err := config.AppendRequests(l.path, f.ApprovedSet(), reason, names...)
 	if err != nil {
-		return nil, err
-	}
-	if err := f.Save(l.path); err != nil {
 		return nil, err
 	}
 	l.sink.Record(core.Event{TS: time.Now(), Kind: core.EventGovern, Tool: "request:" + strings.Join(names, ",")})
@@ -1290,10 +1334,6 @@ func (l *liveSet) metaRequest(_ context.Context, names []string, reason string) 
 func (l *liveSet) metaReport() any {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	f, err := config.Load(l.path)
-	if err != nil {
-		f = &config.File{}
-	}
 
 	type backendState struct {
 		Transport string `json:"transport"`
@@ -1309,6 +1349,7 @@ func (l *liveSet) metaReport() any {
 		}
 		backends[name] = b
 	}
+	reqs, _ := config.LoadRequests(l.path)
 	var approved, enabled int
 	var drifted []string
 	for _, info := range l.catalog() {
@@ -1328,7 +1369,7 @@ func (l *liveSet) metaReport() any {
 		"backends":  backends,
 		"approved":  approved,
 		"enabled":   enabled,
-		"requested": f.Requested,
+		"requested": reqs,
 		"drifted":   drifted,
 	}
 }

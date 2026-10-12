@@ -1,8 +1,13 @@
 # Configuration
 
-One file: `toolhost.json` (default; `-c <path>` on every command).
-Written `0600`, saved atomically (tmp+rename). Full example:
-`toolhost.example.json`.
+One file per environment: `toolhost.json`, resolved nearest-scope-first —
+`-c` → this folder's private env (`~/.toolhost/projects/<id>/`) →
+`./toolhost.json` → `~/.toolhost/toolhost.json`. Written `0600`, saved
+atomically (tmp+rename). Full example: `toolhost.example.json`.
+
+Runtime state (OAuth grants, audit log, the agent request queue) lives in
+the env's **state dir**, never in this file — beside the config inside
+home, keyed under `projects/` outside it.
 
 ## Top level
 
@@ -18,13 +23,16 @@ Written `0600`, saved atomically (tmp+rename). Full example:
 | `approved` | string[] | `[]` | qualified names a human permits |
 | `approved_schemas` | object | — | `name → "sha256:<64hex>"` pin written by `approve` — binds the approval to the schema reviewed; drift drops the tool |
 | `enabled` | string[] | absent | live-surface allowlist — see semantics below |
-| `requested` | object[] | — | agent-filed requests; written by `toolhost__request`, consumed by `approve` |
 
 `enabled` semantics: **absent = all approved tools enabled**; present
 (including `[]`) = only `enabled ∩ approved` is live. Never write it by
 hand unless you mean it — `toolhost enable/disable` manages it.
 
-`requested` entries: `{ "name", "reason", "at" }` — deduped by name.
+Agent-filed requests are runtime state, not config: they live in
+`toolhost_requests.json` in the state dir as `{ "name", "reason", "at" }`
+entries deduped by name — written by `toolhost__request`, consumed by
+`approve`. A legacy `requested` array in the config drains into that file
+on first read.
 
 ## Backend
 
@@ -53,21 +61,23 @@ Credential fields accept `"env:NAME"` instead of a literal:
 - `auth.token`, `auth.client_id`, `auth.client_secret`
 
 Rules: resolved at use (connect/serve/status/auth), never written back —
-`Save` persists the reference. Unset or empty var fails closed at load,
-not at first call.
+`Save` persists the reference. Unset or empty var fails closed where the
+value is needed — the gateway `token` resolves at the serving boundary
+(HTTP serve, attach, doctor), so a committed config can carry `env:`
+even on machines that only spawn stdio.
 
 ## Validation
 
-`config.Load` fails closed on: bad JSON, unknown `mode`, missing token
-resolution, bad `call_timeout`, reserved/invalid backend names, missing
-`command`/`url`, `auth` on stdio, `env`/`env_allowlist`/`env_inherit` on
-non-stdio, `env_inherit` + `env_allowlist` together, malformed qualified
-names in `approved`/`enabled`.
+`config.Load` fails closed on: bad JSON, unknown `mode`, bad
+`call_timeout`, reserved/invalid backend names, missing `command`/`url`,
+`auth` on stdio, `env`/`env_allowlist`/`env_inherit` on non-stdio,
+`env_inherit` + `env_allowlist` together, malformed qualified names in
+`approved`/`enabled`.
 
 ## Hot reload
 
 `serve` polls the file every ~1.5s. Live-swapped: `approved`, `enabled`,
-`requested`, `backends` (unchanged sessions kept; changed re-dialed),
-`call_timeout`. Restart-required: `listen`, `token`, `audit_log`, `mode`
-— a change is logged and current values kept. Invalid saves keep the
-current surface and audit a `reload` event with the error.
+`backends` (unchanged sessions kept; changed re-dialed), `call_timeout`.
+Restart-required: `listen`, `token`, `audit_log`, `mode` — a change is
+logged and current values kept. Invalid saves keep the current surface
+and audit a `reload` event with the error.

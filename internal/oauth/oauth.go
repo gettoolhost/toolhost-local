@@ -29,10 +29,10 @@ import (
 // CLIs do this everywhere (gh, az, gcloud all do).
 const DefaultRedirectURL = "http://127.0.0.1:8484/callback"
 
-// StorePath is where upstream tokens live: beside the config file, never in
-// it — the config is shareable, the tokens are credentials.
+// StorePath is where upstream tokens live: in the environment's state dir,
+// never in the config — the config is shareable, the tokens are credentials.
 func StorePath(configPath string) string {
-	return filepath.Join(filepath.Dir(configPath), "toolhost_tokens.json")
+	return filepath.Join(config.StateDir(configPath), "toolhost_tokens.json")
 }
 
 // StoredToken is one backend's persisted grant, including enough of the

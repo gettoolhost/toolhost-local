@@ -16,13 +16,28 @@ import (
 	"github.com/gettoolhost/toolhost-local/internal/config"
 )
 
+// entryName is the canonical server name in client configs — one name at
+// every scope so a project-scope entry shadows a user-scope one, matching
+// the agents' own local > project > user precedence.
+const entryName = "local-gateway"
+
+// legacyEntryName is what attaches wrote before the local-gateway naming —
+// entries under it that are recognizably ours get migrated forward.
+const legacyEntryName = "toolhost"
+
 // Attach registers the gateway with an MCP client — the last mile of
 // install. File-backed clients get an ownership-preserving, compare-and-
 // swap merge of the mcpServers map; CLI-backed clients get their `mcp add`
 // invocation executed. --stdio attaches the spawn form (serve --stdio)
-// instead of the HTTP endpoint + bearer; --dry-run prints the planned
-// action and resulting entry without writing.
-func Attach(cfgPath, client string, stdio, printOnly, dryRun bool, w io.Writer) error {
+// instead of the HTTP endpoint + bearer; --project writes the client's
+// project-scope file in this folder (always the tokenless stdio spawn —
+// no gateway config is needed, the env resolves at spawn time by cwd);
+// --dry-run prints the planned action and resulting entry without writing.
+func Attach(cfgPath, client string, stdio, project, printOnly, dryRun bool, w io.Writer) error {
+	if project {
+		return attachProject(client, printOnly, dryRun, w)
+	}
+
 	abs, err := filepath.Abs(cfgPath)
 	if err != nil {
 		return err
@@ -50,7 +65,7 @@ func Attach(cfgPath, client string, stdio, printOnly, dryRun bool, w io.Writer) 
 
 	if printOnly || client == "json" {
 		fmt.Fprintf(w, "add this server entry to your MCP client config:\n\n")
-		raw, _ := json.MarshalIndent(map[string]any{"toolhost": serverEntry(url, token, bin, abs, "url", stdio)}, "  ", "  ")
+		raw, _ := json.MarshalIndent(map[string]any{entryName: serverEntry(url, token, bin, abs, "url", stdio)}, "  ", "  ")
 		fmt.Fprintf(w, "  \"mcpServers\": %s\n", raw)
 		return nil
 	}
@@ -94,17 +109,17 @@ func Attach(cfgPath, client string, stdio, printOnly, dryRun bool, w io.Writer) 
 	if dryRun {
 		fmt.Fprintf(w, "%s %s\n", res.action, path)
 		if res.action == planCreate || res.action == planUpdate {
-			raw, _ := json.MarshalIndent(res.doc[t.topKey].(map[string]any)["toolhost"], "  ", "  ")
+			raw, _ := json.MarshalIndent(res.doc[t.topKey].(map[string]any)[entryName], "  ", "  ")
 			// The entry carries the gateway bearer in headers — mask it
 			// in display output exactly as the CLI branch does.
 			raw = redactTokenBytes(raw, token)
-			fmt.Fprintf(w, "  \"toolhost\": %s\n", raw)
+			fmt.Fprintf(w, "  %q: %s\n", entryName, raw)
 		}
 		return nil
 	}
 	switch res.action {
 	case planSkip:
-		fmt.Fprintf(w, "toolhost already attached in %s — nothing to do\n", path)
+		fmt.Fprintf(w, "%s already attached in %s — nothing to do\n", entryName, path)
 		provisionSkill(t, w)
 		return nil
 	case planAbsent:
@@ -114,7 +129,7 @@ func Attach(cfgPath, client string, stdio, printOnly, dryRun bool, w io.Writer) 
 	if err := commitMCPServerEntry(res); err != nil {
 		return err
 	}
-	fmt.Fprintf(w, "%s toolhost server entry in %s\n", res.action.pastTense(), res.path)
+	fmt.Fprintf(w, "%s %s server entry in %s\n", res.action.pastTense(), entryName, res.path)
 	if !stdio {
 		fmt.Fprintf(w, "gateway must be serving: toolhost serve (or toolhost install)\n")
 	}
@@ -127,14 +142,56 @@ func Attach(cfgPath, client string, stdio, printOnly, dryRun bool, w io.Writer) 
 // aren't installed. It touches no gateway config — detection is about the
 // clients, not the endpoint — and writes nothing.
 func AttachDetect(w io.Writer) error {
-	fmt.Fprintln(w, "client              state")
+	fmt.Fprintln(w, "client              user scope")
 	for _, name := range sortedKeys(attachTargets) {
 		t := attachTargets[name]
 		state := detectTarget(name, t)
 		fmt.Fprintf(w, "%-20s%s\n", name, state)
 	}
-	fmt.Fprintln(w, "\nattach with: toolhost attach <client> (add --stdio for the spawn form, --dry-run to preview)")
+	fmt.Fprintln(w, "\nproject scope (this folder):")
+	found := false
+	for _, name := range sortedKeys(projectTargets) {
+		t := projectTargets[name]
+		if _, err := os.Stat(t.file); err != nil {
+			continue
+		}
+		found = true
+		fmt.Fprintf(w, "%-20s%s\n", name, detectProjectFile(t))
+	}
+	if !found {
+		fmt.Fprintln(w, "(no project config files here — attach --project <client> creates one)")
+	}
+	fmt.Fprintln(w, "\nattach with: toolhost attach [--project] <client> (--stdio spawn, --dry-run preview)")
 	return nil
+}
+
+// detectProjectFile reads a present project-scope file and reports whether
+// our entry is in it. Read-only — never plans, never writes.
+func detectProjectFile(t projectTarget) string {
+	raw, err := os.ReadFile(t.file)
+	if err != nil {
+		return "unreadable — " + t.file
+	}
+	if t.topKey == "mcp_servers" { // codex TOML
+		if strings.Contains(string(raw), "local-gateway") {
+			return "attached — " + t.file
+		}
+		return "not attached — run: toolhost attach --project codex"
+	}
+	var doc map[string]any
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&doc); err != nil {
+		return "not plain JSON — check manually: " + t.file
+	}
+	if servers, ok := doc[t.topKey].(map[string]any); ok {
+		for _, k := range []string{entryName, legacyEntryName} {
+			if _, has := servers[k]; has {
+				return "attached — " + t.file
+			}
+		}
+	}
+	return "not attached — " + t.file
 }
 
 // detectTarget reports one client's attach state without writing anything.
@@ -165,8 +222,10 @@ func detectTarget(name string, t attachTarget) string {
 		return "config present but not plain JSON — check manually: " + path
 	}
 	if servers, ok := doc[t.topKey].(map[string]any); ok {
-		if _, has := servers["toolhost"]; has {
-			return "attached — " + path
+		for _, k := range []string{entryName, legacyEntryName} {
+			if _, has := servers[k]; has {
+				return "attached — " + path
+			}
 		}
 	}
 	return "not attached — run: toolhost attach " + name
@@ -292,6 +351,142 @@ var attachTargets = map[string]attachTarget{
 		entry:       claudeDesktopEntry,
 		conditional: true,
 	},
+}
+
+// projectTarget is a client's project-scope attach point — a file in the
+// working folder that the agent reads when it opens the project. The entry
+// is always the tokenless stdio spawn: the spawned gateway resolves the
+// folder's environment by cwd (private env → ./toolhost.json → global).
+type projectTarget struct {
+	display string
+	file    string // project-relative path
+	topKey  string
+	entry   func() map[string]any // nil → the TOML special case (codex)
+}
+
+var projectTargets = map[string]projectTarget{
+	"claude":   {display: "Claude Code", file: ".mcp.json", topKey: "mcpServers", entry: stdioSpawn},
+	"devin":    {display: "Devin", file: filepath.Join(".devin", "mcp_config.local.json"), topKey: "mcpServers", entry: stdioSpawn},
+	"cursor":   {display: "Cursor", file: filepath.Join(".cursor", "mcp.json"), topKey: "mcpServers", entry: stdioSpawn},
+	"vscode":   {display: "VS Code", file: filepath.Join(".vscode", "mcp.json"), topKey: "servers", entry: vscodeSpawn},
+	"gemini":   {display: "Gemini CLI", file: filepath.Join(".gemini", "settings.json"), topKey: "mcpServers", entry: stdioSpawn},
+	"opencode": {display: "OpenCode", file: "opencode.json", topKey: "mcp", entry: opencodeSpawn},
+	"zed":      {display: "Zed", file: filepath.Join(".zed", "settings.json"), topKey: "context_servers", entry: stdioSpawn},
+	"roo":      {display: "Roo Code", file: filepath.Join(".roo", "mcp.json"), topKey: "mcpServers", entry: stdioSpawn},
+	"codex":    {display: "Codex", file: filepath.Join(".codex", "config.toml"), topKey: "mcp_servers"},
+}
+
+// stdioSpawn is the project-scope server entry: a bare `toolhost` resolved
+// through PATH (committable — no absolute paths, no token, no -c) that the
+// client spawns with the project as its working directory.
+func stdioSpawn() map[string]any {
+	return map[string]any{
+		"command": "toolhost",
+		"args":    []string{"serve", "--stdio"},
+	}
+}
+
+func vscodeSpawn() map[string]any {
+	e := stdioSpawn()
+	e["type"] = "stdio"
+	return e
+}
+
+func opencodeSpawn() map[string]any {
+	return map[string]any{
+		"type":    "local",
+		"command": []string{"toolhost", "serve", "--stdio"},
+	}
+}
+
+// attachProject writes the local-gateway stdio entry into the client's
+// project-scope file in this folder. No gateway config is consulted — the
+// spawned process resolves the environment itself when the agent runs.
+func attachProject(client string, printOnly, dryRun bool, w io.Writer) error {
+	t, ok := projectTargets[client]
+	if !ok {
+		names := make([]string, 0, len(projectTargets))
+		for n := range projectTargets {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		return fmt.Errorf("no project-scope config for %q — project-capable clients: %s", client, strings.Join(names, ", "))
+	}
+	if client == "codex" {
+		return attachCodexProject(t.file, printOnly, dryRun, w)
+	}
+	entry := t.entry()
+	if printOnly {
+		raw, _ := json.MarshalIndent(map[string]any{entryName: entry}, "  ", "  ")
+		fmt.Fprintf(w, "add to %s under %q:\n\n%s\n", t.file, t.topKey, raw)
+		return nil
+	}
+	res, err := planMCPServerEntry(t.file, t.topKey, entry, false)
+	if err != nil {
+		return err
+	}
+	if dryRun {
+		fmt.Fprintf(w, "%s %s\n", res.action, t.file)
+		if res.action == planCreate || res.action == planUpdate {
+			raw, _ := json.MarshalIndent(res.doc[t.topKey].(map[string]any)[entryName], "  ", "  ")
+			fmt.Fprintf(w, "  %q: %s\n", entryName, raw)
+		}
+		return nil
+	}
+	switch res.action {
+	case planSkip:
+		fmt.Fprintf(w, "%s already attached in %s — nothing to do\n", entryName, t.file)
+		return nil
+	}
+	if err := commitMCPServerEntry(res); err != nil {
+		return err
+	}
+	fmt.Fprintf(w, "%s %s server entry in %s\n", res.action.pastTense(), entryName, res.path)
+	fmt.Fprintf(w, "open this folder in %s and approve %s when prompted — its tools come from this folder's environment\n", t.display, entryName)
+	return nil
+}
+
+// attachCodexProject appends the [mcp_servers.local-gateway] table to
+// .codex/config.toml — TOML we can't merge field-by-field, so the entry
+// is appended as a dedicated table and an existing one is left alone.
+func attachCodexProject(file string, printOnly, dryRun bool, w io.Writer) error {
+	block := "\n[mcp_servers.local-gateway]\ncommand = \"toolhost\"\nargs = [\"serve\", \"--stdio\"]\n"
+	if printOnly {
+		fmt.Fprintf(w, "append to %s:\n%s", file, block)
+		return nil
+	}
+	raw, err := os.ReadFile(file)
+	existed := err == nil
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	// A named table we can identify — whether ours or someone's — is
+	// left alone; TOML gives us no cheap ownership check.
+	if strings.Contains(string(raw), "local-gateway") {
+		fmt.Fprintf(w, "%s already mentions %s — check it manually, not rewriting\n", file, entryName)
+		return nil
+	}
+	if dryRun {
+		fmt.Fprintf(w, "append %s:\n%s", file, block)
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(file, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if !existed {
+		fmt.Fprintf(w, "created %s\n", file)
+	}
+	if _, err := f.WriteString(block); err != nil {
+		return err
+	}
+	fmt.Fprintf(w, "added %s server to %s\n", entryName, file)
+	fmt.Fprintln(w, "codex loads project config only for trusted projects — trust this folder when codex asks")
+	return nil
 }
 
 func attachTargetNames() string {
@@ -500,12 +695,12 @@ const (
 )
 
 // planMCPServerEntry reads the client config, decides the attach action,
-// and builds the merged document. Ownership rules: an identical toolhost
-// entry is a no-op; an entry we recognize as ours (a stale gateway entry)
-// is updated in place, preserving keys the client or user added; a
-// toolhost entry we don't recognize is FOREIGN — we refuse rather than
-// clobber someone's server. A conditional target with no file is skipped,
-// never created.
+// and builds the merged document. Ownership rules: an identical entry is
+// a no-op; an entry we recognize as ours (a stale gateway entry, or a
+// legacy "toolhost" one) is updated/migrated in place, preserving keys
+// the client or user added; an entry under our name we don't recognize is
+// FOREIGN — we refuse rather than clobber someone's server. A conditional
+// target with no file is skipped, never created.
 func planMCPServerEntry(path, topKey string, entry map[string]any, conditional bool) (*mergePlan, error) {
 	doc := map[string]any{}
 	raw, err := os.ReadFile(path)
@@ -549,23 +744,31 @@ func planMCPServerEntry(path, topKey string, entry map[string]any, conditional b
 		servers = map[string]any{}
 		doc[topKey] = servers
 	}
+	// The canonical name wins; a legacy "toolhost" entry that is
+	// recognizably ours is treated as the same entry — it migrates to the
+	// canonical name on write. A "toolhost" entry that ISN'T ours is left
+	// untouched (someone else's server under the old name).
 	var existing map[string]any
-	if ev, present := servers["toolhost"]; present {
+	legacyKey := ""
+	if ev, present := servers[entryName]; present {
 		var ok bool
 		if existing, ok = ev.(map[string]any); !ok {
-			// A "toolhost" entry that isn't an object is foreign to us —
-			// same refusal as an unrecognized object.
-			return nil, fmt.Errorf("%s already has a \"toolhost\" server that isn't this gateway — refusing to overwrite it; remove or rename it first", path)
+			return nil, fmt.Errorf("%s already has a %q server that isn't this gateway — refusing to overwrite it; remove or rename it first", path, entryName)
+		}
+	} else if ev, present := servers[legacyEntryName]; present {
+		if obj, ok := ev.(map[string]any); ok && looksLikeOurs(obj) {
+			existing = obj
+			legacyKey = legacyEntryName
 		}
 	}
 	switch {
 	case existing == nil:
-		servers["toolhost"] = entry
+		servers[entryName] = entry
 		return &mergePlan{action: planCreate, path: path, before: raw, existed: existed, doc: doc}, nil
-	case sameJSON(existing, entry):
+	case sameJSON(existing, entry) && legacyKey == "":
 		return &mergePlan{action: planSkip, path: path, before: raw, existed: existed, doc: doc}, nil
 	case !looksLikeOurs(existing):
-		return nil, fmt.Errorf("%s already has a \"toolhost\" server that isn't this gateway — refusing to overwrite it; remove or rename it first", path)
+		return nil, fmt.Errorf("%s already has a %q server that isn't this gateway — refusing to overwrite it; remove or rename it first", path, entryName)
 	default:
 		// Ours but stale — rewrite our shape, keep client-added keys.
 		// Owned keys absent from the new entry are dropped first: a
@@ -584,6 +787,12 @@ func planMCPServerEntry(path, topKey string, entry map[string]any, conditional b
 				continue
 			}
 			existing[k] = v
+		}
+		if legacyKey != "" {
+			// Migration: the entry lived under the old "toolhost" name —
+			// move it to the canonical one.
+			delete(servers, legacyKey)
+			servers[entryName] = existing
 		}
 		return &mergePlan{action: planUpdate, path: path, before: raw, existed: existed, doc: doc}, nil
 	}

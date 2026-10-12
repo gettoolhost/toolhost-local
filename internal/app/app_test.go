@@ -659,6 +659,7 @@ func TestRequestEndToEnd(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	t.Setenv("TOOLHOST_HOME", t.TempDir())
 	up := fixtureUpstream(t)
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "toolhost.json")
@@ -738,12 +739,20 @@ func TestRequestEndToEnd(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("request: %v", text(res))
 	}
+	reqs, err := config.LoadRequests(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !config.RequestSet(reqs)["up__secret"] {
+		t.Fatalf("request did not persist to state: %+v", reqs)
+	}
+	// The queue lives in the env's state file — never in the config.
 	reloaded, err := config.Load(cfgPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reloaded.RequestedSet()["up__secret"] {
-		t.Fatalf("request did not persist to config: %+v", reloaded.Requested)
+	if len(reloaded.Requested) != 0 {
+		t.Fatalf("request leaked into config: %+v", reloaded.Requested)
 	}
 	if _, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "up__secret"}); err == nil {
 		t.Fatal("requested tool is callable — a request must not widen the surface")
@@ -754,9 +763,8 @@ func TestRequestEndToEnd(t *testing.T) {
 	if res.IsError || strings.Contains(text(res), `"up__secret",`) {
 		t.Fatalf("dedup: second request should add nothing, got %v", text(res))
 	}
-	reloaded, _ = config.Load(cfgPath)
-	if len(reloaded.Requested) != 1 {
-		t.Fatalf("dedup: want 1 pending request, got %+v", reloaded.Requested)
+	if reqs, _ := config.LoadRequests(cfgPath); len(reqs) != 1 {
+		t.Fatalf("dedup: want 1 pending request, got %+v", reqs)
 	}
 
 	// toolhost__status reports the pending ask to the human.
@@ -788,9 +796,8 @@ func TestRequestEndToEnd(t *testing.T) {
 	if err := app.EditApprovals(ctx, cfgPath, []string{"up__secret"}, true, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	reloaded, _ = config.Load(cfgPath)
-	if len(reloaded.Requested) != 0 {
-		t.Fatalf("approve left a stale request: %+v", reloaded.Requested)
+	if reqs, _ := config.LoadRequests(cfgPath); len(reqs) != 0 {
+		t.Fatalf("approve left a stale request: %+v", reqs)
 	}
 	// The watcher picks up the approval — poll the call itself until the
 	// tool lands on the surface (search reflects config, not the swap).

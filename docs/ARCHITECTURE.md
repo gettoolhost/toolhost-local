@@ -37,7 +37,7 @@ flowchart LR
   enable --> resolve
   discover --> resolve
   resolve --> surface["Visible and callable"]
-  meta["toolhost__*<br/>agent control"] --> config["toolhost.json<br/>enabled / requested"]
+  meta["toolhost__*<br/>agent control"] --> config["toolhost.json<br/>enabled"] & state["toolhost_requests.json<br/>requests"]
   human["toolhost approve<br/>human CLI"] --> config
   config --> approve
   config --> enable
@@ -77,7 +77,7 @@ flowchart LR
 - **MCP types in the core:** `*mcp.Tool`, `json.RawMessage`, and `*mcp.CallToolResult` are the gateway's domain vocabulary; translation would duplicate the protocol model.
 - **One resolver:** `core.Resolve` intersects discovery, approval, and enablement; registering only its output makes invisible tools uncallable. A fourth input — `approved_schemas` pins — drops approved tools whose live schema drifted from the contract reviewed.
 - **`__` namespacing:** `backend__tool` fits MCP client tool-name constraints; `::`, `.`, and `/` do not.
-- **File-backed policy:** `approved`, `enabled`, and `requested` live in `toolhost.json`; atomic saves and a ~1.5s watcher let `Reload` swap the live surface without a database.
+- **File-backed policy:** `approved` and `enabled` live in `toolhost.json` (governance decisions); `requested` lives in `toolhost_requests.json` in the env's state dir (runtime data — a committed config stays clean). Atomic saves and a ~1.5s watcher let `Reload` swap the live surface without a database.
 - **Stateless default:** independent Streamable HTTP requests need no `Mcp-Session-Id`; 2026-07-28 clients can subscribe to list changes, while stateful mode serves older clients that need held sessions.
 - **Context boundary:** only deadline and cancellation cross into upstream calls; downstream protocol-version values could break a legacy upstream.
 - **Persistent meta-tools:** the eight `toolhost__*` tools sit outside the resolved set, so reload cannot remove the agent control plane.

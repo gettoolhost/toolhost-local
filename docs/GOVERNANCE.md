@@ -41,7 +41,7 @@ Always registered, unaffected by reloads, reserved namespace:
 | `toolhost__call` | `name`, `arguments` | dispatch an enabled tool by name — escape hatch for clients that ignore `tools/list_changed` |
 | `toolhost__enable` | `names[]` | approved → live now; refuses unapproved |
 | `toolhost__disable` | `names[]` | live → off now; stays approved |
-| `toolhost__request` | `names[]`, `reason` | queue an approval ask in `requested` |
+| `toolhost__request` | `names[]`, `reason` | queue an approval ask in the env's request file |
 | `toolhost__audit` | `limit?`, `kind?` | tail the audit log (newest last) — introspection without file access |
 | `toolhost__status` | — | mode, per-backend up/tools, approved/enabled counts, pending requests |
 
@@ -52,8 +52,9 @@ config file the CLI edits → same persistence, same watcher pickup.
 ## The request loop
 
 1. Agent hits a locked tool → `toolhost__request {names, reason}`.
-2. Request lands in `requested` (deduped); `toolhost status` /
-   `toolhost__status` surface it.
+2. Request lands in `toolhost_requests.json` in the env's state dir
+   (deduped — never in `toolhost.json`, so a committed config stays
+   clean); `toolhost status` / `toolhost__status` surface it.
 3. Human runs `toolhost approve <name>` — or `toolhost approve
    --requested` to drain the whole queue — and the entry is consumed.
 4. Agent then `toolhost__enable` or the human runs `toolhost enable`.

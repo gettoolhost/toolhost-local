@@ -5,19 +5,25 @@
 ```bash
 brew install gettoolhost/tap/toolhost      # or: go install github.com/gettoolhost/toolhost-local/cmd/toolhost@latest
                                            # or: curl -fsSL https://raw.githubusercontent.com/gettoolhost/toolhost-local/main/install.sh | bash
-toolhost init                              # writes ~/.config/toolhost/toolhost.json (or ./toolhost.json via -c)
+toolhost init                              # global env: ~/.toolhost/toolhost.json
+toolhost init --project                    # or a private env for this folder
 toolhost doctor                            # verify: config, token, port, backends, grants, service
 toolhost attach                            # survey every known client — attached or not
 toolhost attach <client>                   # register with your agent — claude · claude-desktop · cline · codex · cursor · devin · gemini · opencode · roo · vscode · windsurf · zed
 toolhost install                           # persist as a user service (launchd / systemd --user)
 ```
 
-Default config resolution: `./toolhost.json` when present (a directory
-holding a config is its own context), else the canonical home
-`~/.config/toolhost/` (`$XDG_CONFIG_HOME/toolhost` when set). `-c`
-overrides everything. The audit log and token store always sit beside
-whichever config is in play — a relative `audit_log` anchors to the
-config's directory, not the process cwd.
+Default config resolution, nearest scope first: `-c` → this folder's
+private env (`~/.toolhost/projects/<id>/toolhost.json`, created by
+`init --project`) → `./toolhost.json` → `~/.toolhost/toolhost.json`
+(`$TOOLHOST_HOME` relocates the whole home; a legacy `~/.config/toolhost`
+tree is moved forward automatically on first run).
+
+All runtime state lives in the environment's **state dir** — beside the
+config for home envs, in the keyed `projects/<id>/` dir for folder envs.
+Tokens, grants, audit log, and the agent request queue land there, never
+in the working folder: a committed `./toolhost.json` produces no
+artifacts. A relative `audit_log` anchors to the state dir.
 
 ## Run it
 
@@ -66,8 +72,9 @@ retries. Every drop and reconnect is audited (`backend_error` /
 
 `serve` polls the config every ~1.5s — edit by hand or via CLI.
 
-- Hot: `approved`, `enabled`, `requested`, `backends` (unchanged sessions
-  kept; changed re-dialed; removed closed), `call_timeout`.
+- Hot: `approved`, `enabled`, `backends` (unchanged sessions
+  kept; changed re-dialed; removed closed), `call_timeout`. The request
+  queue (`toolhost_requests.json` in the state dir) is re-read on demand.
 - Restart-required: `listen`, `token`, `audit_log`, `mode` — logged,
   current values kept.
 - Atomic saves (tmp+rename) mean the watcher never reads a torn write.
@@ -80,10 +87,16 @@ retries. Every drop and reconnect is audited (`backend_error` /
 
 | path | purpose |
 |---|---|
-| `toolhost.json` | config — the only state toolhost keeps |
-| `toolhost_tokens.json` | upstream OAuth grants (beside config) |
-| `toolhost_audit.jsonl` | append-only evidence |
+| `toolhost.json` | config — policy; lives in the env (home or project dir for `--shared`) |
+| `toolhost_tokens.json` | upstream OAuth grants (state dir) |
+| `toolhost_audit.jsonl` | append-only evidence (state dir) |
+| `toolhost_requests.json` | pending agent requests (state dir) |
 | `toolhost_serve.log` | service-mode stdout/stderr (beside config) |
+
+For the global env the state dir is `~/.toolhost/` itself; for a
+folder's private env it's `~/.toolhost/projects/<id>/`. A project folder
+therefore stays free of credentials and runtime state — the only file it
+may hold is a deliberately `init --shared`-created `toolhost.json`.
 
 ## Troubleshooting
 

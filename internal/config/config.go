@@ -4,8 +4,11 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -114,10 +117,10 @@ type File struct {
 	// forever.
 	CallTimeout string `json:"call_timeout,omitempty"`
 
-	// Requested is the agent's pending ask: qualified names an agent put
-	// on the record via toolhost__request, with its reason. Humans review
-	// it (`toolhost status`) and approve consumes entries. Agents can
-	// write it; only humans turn requests into approvals.
+	// Requested is the legacy agent-request queue, formerly stored in this
+	// file. New writes go to the env's state dir (toolhost_requests.json)
+	// so a committed config is never mutated at runtime; LoadRequests
+	// drains any entries still here into the state file on first read.
 	Requested []Request `json:"requested,omitempty"`
 
 	// AuditMaxMB caps the audit log size in MiB — past it the log rotates
@@ -167,31 +170,254 @@ func Load(path string) (*File, error) {
 	return &f, nil
 }
 
-// ConfigHome is toolhost's canonical home — $XDG_CONFIG_HOME/toolhost, else
-// ~/.config/toolhost. Config, audit log, and token store live here when no
-// project-local toolhost.json exists.
+// ConfigHome is toolhost's canonical home — $TOOLHOST_HOME if set, else
+// ~/.toolhost. The user's global config lives here along with every
+// environment's state: credentials, audit logs, and request queues never
+// live in project folders.
 func ConfigHome() string {
+	if x := os.Getenv("TOOLHOST_HOME"); x != "" {
+		return x
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ".toolhost" // last resort: cwd
+	}
+	return filepath.Join(home, ".toolhost")
+}
+
+// legacyConfigHome is the pre-.toolhome location — ~/.config/toolhost (or
+// $XDG_CONFIG_HOME/toolhost). MigrateHome moves it forward once.
+func legacyConfigHome() string {
 	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" {
 		return filepath.Join(x, "toolhost")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "toolhost" // last resort: cwd
+		return ""
 	}
 	return filepath.Join(home, ".config", "toolhost")
 }
 
-// DefaultPath resolves which config a command reads when -c isn't given:
-// an explicit flag wins; a ./toolhost.json in the working directory beats
-// the canonical home (a directory holding a config IS its own context).
+// MigrateHome moves a legacy ~/.config/toolhost tree to ~/.toolhost when the
+// new home doesn't exist yet. Called once at CLI start; a no-op after.
+func MigrateHome(w io.Writer) {
+	if os.Getenv("TOOLHOST_HOME") != "" {
+		return
+	}
+	home := ConfigHome()
+	if _, err := os.Stat(home); err == nil {
+		return // new home already exists — leave both alone
+	}
+	legacy := legacyConfigHome()
+	if legacy == "" || legacy == home {
+		return
+	}
+	if _, err := os.Stat(legacy); err != nil {
+		return
+	}
+	if err := os.Rename(legacy, home); err != nil {
+		fmt.Fprintf(w, "note: could not migrate %s → %s: %v\n", legacy, home, err)
+		return
+	}
+	fmt.Fprintf(w, "migrated %s → %s\n", legacy, home)
+}
+
+// projectsDir holds one subdirectory per project environment, keyed by the
+// folder's absolute path.
+func projectsDir() string {
+	return filepath.Join(ConfigHome(), "projects")
+}
+
+// ProjectKey turns a directory's absolute path into a stable, filesystem-
+// safe environment id: basename slug + short path hash, so two same-named
+// projects in different trees never collide.
+func ProjectKey(dir string) string {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		abs = dir
+	}
+	sum := sha256.Sum256([]byte(abs))
+	var b strings.Builder
+	for _, r := range strings.ToLower(filepath.Base(abs)) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else if b.Len() > 0 {
+			b.WriteByte('-')
+		}
+	}
+	slug := strings.Trim(b.String(), "-")
+	if slug == "" {
+		slug = "env"
+	}
+	return fmt.Sprintf("%s-%s", slug, hex.EncodeToString(sum[:4]))
+}
+
+// ProjectConfigPath is the private environment for a folder — keyed under
+// the user's home, never written into the folder itself.
+func ProjectConfigPath(dir string) string {
+	return filepath.Join(projectsDir(), ProjectKey(dir), "toolhost.json")
+}
+
+// StateDir is where an environment's runtime state lives — tokens, audit
+// log, request queue. Global config and private envs keep state beside
+// themselves (inside the home); a config anywhere else (a committed
+// ./toolhost.json, an explicit -c path) gets a keyed state dir so the
+// folder holding the config stays pure declaration.
+func StateDir(cfgPath string) string {
+	dir, err := filepath.Abs(filepath.Dir(cfgPath))
+	if err != nil {
+		dir = filepath.Dir(cfgPath)
+	}
+	home, err := filepath.Abs(ConfigHome())
+	if err != nil {
+		home = ConfigHome()
+	}
+	if dir == home || strings.HasPrefix(dir, filepath.Join(home, "projects")+string(filepath.Separator)) {
+		return dir
+	}
+	return filepath.Join(projectsDir(), ProjectKey(dir))
+}
+
+// DefaultPath resolves which config a command reads when -c isn't given,
+// nearest scope first: a private environment keyed for this folder, then a
+// committed ./toolhost.json, then the global home config. Mirrors the
+// agents' own local > project > user precedence.
 func DefaultPath(explicit string) string {
 	if explicit != "" {
 		return explicit
 	}
-	if _, err := os.Stat("toolhost.json"); err == nil {
+	if cwd, err := os.Getwd(); err == nil {
+		if p := ProjectConfigPath(cwd); fileExists(p) {
+			return p
+		}
+	}
+	if fileExists("toolhost.json") {
 		return "toolhost.json"
 	}
 	return filepath.Join(ConfigHome(), "toolhost.json")
+}
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
+
+// RequestsFile is the env's agent-request queue — runtime state, kept out
+// of the config so a committed toolhost.json is never mutated by agents.
+const RequestsFile = "toolhost_requests.json"
+
+// RequestsPath is the queue file for the environment cfgPath resolves to.
+func RequestsPath(cfgPath string) string {
+	return filepath.Join(StateDir(cfgPath), RequestsFile)
+}
+
+// LoadRequests reads the pending agent-request queue, draining any legacy
+// `requested` entries still in the config file into the state file once —
+// the config is then rewritten without them.
+func LoadRequests(cfgPath string) ([]Request, error) {
+	var reqs []Request
+	if raw, err := os.ReadFile(RequestsPath(cfgPath)); err == nil {
+		if err := json.Unmarshal(raw, &reqs); err != nil {
+			return nil, fmt.Errorf("parse %s: %w", RequestsPath(cfgPath), err)
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+	f, err := Load(cfgPath)
+	if err != nil {
+		return reqs, nil // config unreadable elsewhere — don't mask it here
+	}
+	if len(f.Requested) == 0 {
+		return reqs, nil
+	}
+	have := make(map[string]bool, len(reqs))
+	for _, r := range reqs {
+		have[r.Name] = true
+	}
+	for _, r := range f.Requested {
+		if !have[r.Name] {
+			reqs = append(reqs, r)
+		}
+	}
+	if err := SaveRequests(cfgPath, reqs); err != nil {
+		return reqs, nil // queue merged in memory; drain is best-effort
+	}
+	f.Requested = nil
+	_ = f.Save(cfgPath)
+	return reqs, nil
+}
+
+// SaveRequests writes the queue file (0600) into the env's state dir.
+func SaveRequests(cfgPath string, reqs []Request) error {
+	p := RequestsPath(cfgPath)
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		return err
+	}
+	raw, err := json.MarshalIndent(reqs, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(p, append(raw, '\n'), 0o600)
+}
+
+// AppendRequests queues qualified names (deduped, newest-last) in the
+// env's request file — what toolhost__request records. Approved names are
+// refused: the request is already answered.
+func AppendRequests(cfgPath string, approved map[string]bool, reason string, names ...string) ([]string, error) {
+	reqs, err := LoadRequests(cfgPath)
+	if err != nil {
+		return nil, err
+	}
+	have := make(map[string]bool, len(reqs))
+	for _, r := range reqs {
+		have[r.Name] = true
+	}
+	var added []string
+	for _, n := range names {
+		if _, _, err := namespace.Split(n); err != nil {
+			return nil, fmt.Errorf("%q is not a qualified name (want backend__tool): %w", n, err)
+		}
+		if approved[n] {
+			return nil, fmt.Errorf("%q is already approved — enable it with toolhost__enable", n)
+		}
+		if have[n] {
+			continue
+		}
+		reqs = append(reqs, Request{Name: n, Reason: reason, At: time.Now().UTC()})
+		have[n] = true
+		added = append(added, n)
+	}
+	if len(added) == 0 {
+		return added, nil
+	}
+	return added, SaveRequests(cfgPath, reqs)
+}
+
+// RemoveAnsweredRequests drops queue entries whose names are now approved
+// — an approval is the answer to the request.
+func RemoveAnsweredRequests(cfgPath string, approved map[string]bool) {
+	reqs, err := LoadRequests(cfgPath)
+	if err != nil || len(reqs) == 0 {
+		return
+	}
+	kept := reqs[:0]
+	for _, r := range reqs {
+		if !approved[r.Name] {
+			kept = append(kept, r)
+		}
+	}
+	if len(kept) != len(reqs) {
+		_ = SaveRequests(cfgPath, kept)
+	}
+}
+
+// RequestSet is the lookup form — name → pending request.
+func RequestSet(reqs []Request) map[string]bool {
+	set := make(map[string]bool, len(reqs))
+	for _, r := range reqs {
+		set[r.Name] = true
+	}
+	return set
 }
 
 func (f *File) applyDefaults() {
@@ -288,11 +514,9 @@ func (f *File) validate() error {
 	if f.Mode != ModeStateless && f.Mode != ModeStateful {
 		return fmt.Errorf("mode must be %q or %q", ModeStateless, ModeStateful)
 	}
-	// env: references must resolve — a missing var fails closed at load,
-	// not at first call.
-	if _, err := f.ResolvedToken(); err != nil {
-		return fmt.Errorf("token: %w", err)
-	}
+	// The gateway token resolves lazily at the boundaries that need it
+	// (HTTP serve, attach, doctor) — a committed project config may carry
+	// an env: reference whose var only exists where serving happens.
 	if f.CallTimeout != "" {
 		if _, err := parseTimeout(f.CallTimeout); err != nil {
 			return fmt.Errorf("call_timeout: %w", err)
@@ -548,41 +772,6 @@ func parseTimeout(s string) (time.Duration, error) {
 		return 0, fmt.Errorf("must be positive, got %q", s)
 	}
 	return d, nil
-}
-
-// RequestTools records agent approval requests: qualified names, deduped,
-// newest-last. Requesting is not approval — a human still has to approve.
-func (f *File) RequestTools(reason string, names ...string) ([]string, error) {
-	have := make(map[string]bool, len(f.Requested))
-	for _, r := range f.Requested {
-		have[r.Name] = true
-	}
-	approved := f.ApprovedSet()
-	var added []string
-	for _, n := range names {
-		if _, _, err := namespace.Split(n); err != nil {
-			return nil, fmt.Errorf("%q is not a qualified name (want backend__tool): %w", n, err)
-		}
-		if approved[n] {
-			return nil, fmt.Errorf("%q is already approved — enable it with toolhost__enable", n)
-		}
-		if have[n] {
-			continue
-		}
-		f.Requested = append(f.Requested, Request{Name: n, Reason: reason, At: time.Now().UTC()})
-		have[n] = true
-		added = append(added, n)
-	}
-	return added, nil
-}
-
-// RequestedSet is the lookup form — name → pending request.
-func (f *File) RequestedSet() map[string]bool {
-	set := make(map[string]bool, len(f.Requested))
-	for _, r := range f.Requested {
-		set[r.Name] = true
-	}
-	return set
 }
 
 // Approve adds qualified names bound to their schema pins (name →

@@ -35,9 +35,15 @@ the separator without understanding why `::` was rejected.
 - Fail closed; never default-open on a missing or malformed anything.
 
 - Releases are always `v0.0.x` patch bumps — never bump minor/major.
-- Default config resolution: `./toolhost.json` if present, else
-  `~/.config/toolhost/toolhost.json`; `-c` overrides. Relative
-  `audit_log` anchors to the config dir.
+- Config resolution, nearest scope first: `-c` → this folder's private
+  env (`~/.toolhost/projects/<id>/toolhost.json`) → `./toolhost.json` →
+  `~/.toolhost/toolhost.json`. Credentials and runtime state live in the
+  env's state dir (`config.StateDir`) — beside the config inside home,
+  keyed under `projects/` outside it — never in the working folder.
+  Relative `audit_log` anchors to the state dir; the `requested` queue
+  lives in `toolhost_requests.json` there, not in the config.
+- The MCP server entry name is `local-gateway`; `toolhost` is the legacy
+  name we recognize and migrate, never reissue.
 
 ## Local files
 
