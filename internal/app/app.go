@@ -211,9 +211,10 @@ func EditApprovals(ctx context.Context, path string, names []string, approve, dr
 		return err
 	}
 	var changed []string
+	var pins map[string]string
 	if approve {
-		pins, err := schemaPins(ctx, f, path, names)
-		if err != nil {
+		var err error
+		if pins, err = schemaPins(ctx, f, path, names); err != nil {
 			return err
 		}
 		if changed, err = f.Approve(pins); err != nil {
@@ -232,7 +233,11 @@ func EditApprovals(ctx context.Context, path string, names []string, approve, dr
 			verb = "revoke"
 		}
 		for _, n := range changed {
-			fmt.Fprintf(w, "would %s %s\n", verb, n)
+			if pin := pins[n]; pin != "" {
+				fmt.Fprintf(w, "would %s %s (schema %s)\n", verb, n, pin)
+			} else {
+				fmt.Fprintf(w, "would %s %s\n", verb, n)
+			}
 		}
 		return nil
 	}

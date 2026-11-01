@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/gettoolhost/toolhost-local/internal/app"
@@ -66,19 +67,27 @@ func main() {
 		cfg := fs.String("c", "", cfgFlagUsage)
 		req := fs.Bool("requested", false, "approve every pending agent tool request")
 		dry := fs.Bool("dry-run", false, "show the pins and diff without writing")
-		_ = fs.Parse(os.Args[2:])
+		names, perr := parseFlags(fs, os.Args[2:])
+		if perr != nil {
+			err = perr
+			break
+		}
 		if *req {
 			err = app.ApproveRequested(context.Background(), config.DefaultPath(*cfg), os.Stdout)
 		} else {
-			err = app.EditApprovals(context.Background(), config.DefaultPath(*cfg), fs.Args(), true, *dry, os.Stdout)
+			err = app.EditApprovals(context.Background(), config.DefaultPath(*cfg), names, true, *dry, os.Stdout)
 		}
 
 	case "revoke":
 		fs := flag.NewFlagSet("revoke", flag.ExitOnError)
 		cfg := fs.String("c", "", cfgFlagUsage)
 		dry := fs.Bool("dry-run", false, "show the diff without writing")
-		_ = fs.Parse(os.Args[2:])
-		err = app.EditApprovals(context.Background(), config.DefaultPath(*cfg), fs.Args(), false, *dry, os.Stdout)
+		names, perr := parseFlags(fs, os.Args[2:])
+		if perr != nil {
+			err = perr
+			break
+		}
+		err = app.EditApprovals(context.Background(), config.DefaultPath(*cfg), names, false, *dry, os.Stdout)
 
 	case "requests":
 		err = app.Requests(context.Background(), os.Args[2:], os.Stdout)
@@ -87,8 +96,12 @@ func main() {
 		fs := flag.NewFlagSet(os.Args[1], flag.ExitOnError)
 		cfg := fs.String("c", "", cfgFlagUsage)
 		only := fs.Bool("only", false, "enable exactly these tools, hiding the rest")
-		_ = fs.Parse(os.Args[2:])
-		err = app.EditEnabled(config.DefaultPath(*cfg), fs.Args(), os.Args[1] == "enable", *only, os.Stdout)
+		names, perr := parseFlags(fs, os.Args[2:])
+		if perr != nil {
+			err = perr
+			break
+		}
+		err = app.EditEnabled(config.DefaultPath(*cfg), names, os.Args[1] == "enable", *only, os.Stdout)
 
 	case "audit":
 		fs := flag.NewFlagSet("audit", flag.ExitOnError)
@@ -105,12 +118,16 @@ func main() {
 		project := fs.Bool("project", false, "write the client project-scope file in this folder (local-gateway, stdio spawn)")
 		printOnly := fs.Bool("print", false, "print the mcpServers JSON entry instead of writing it")
 		dryRun := fs.Bool("dry-run", false, "show the planned merge without writing")
-		_ = fs.Parse(os.Args[2:])
+		pos, perr := parseFlags(fs, os.Args[2:])
+		if perr != nil {
+			err = perr
+			break
+		}
 		client := ""
 		switch {
-		case fs.NArg() == 1:
-			client = fs.Arg(0)
-		case fs.NArg() > 1:
+		case len(pos) == 1:
+			client = pos[0]
+		case len(pos) > 1:
 			fmt.Fprintln(os.Stderr, "usage: toolhost attach [-c config] [--project] [--stdio] [--print] [--dry-run] [<client>]")
 			os.Exit(2)
 		case !*printOnly:
@@ -179,6 +196,40 @@ func main() {
 		fmt.Fprintln(os.Stderr, "toolhost:", err)
 		os.Exit(1)
 	}
+}
+
+// parseFlags hoists declared flags out of argv wherever they sit, then
+// parses them — flag.FlagSet alone stops at the first positional, so a
+// flag after the names (`approve fs__x --dry-run`) would silently land in
+// Args() as a fake tool name. Returns the leftover positionals. Unknown
+// dash-tokens go to the FlagSet, which refuses them with usage.
+func parseFlags(fs *flag.FlagSet, argv []string) ([]string, error) {
+	valueFlags := map[string]bool{}
+	fs.VisitAll(func(f *flag.Flag) {
+		bf, ok := f.Value.(interface{ IsBoolFlag() bool })
+		valueFlags[f.Name] = !ok || !bf.IsBoolFlag()
+	})
+	var flags, rest []string
+	for i := 0; i < len(argv); i++ {
+		t := argv[i]
+		if t == "-" || !strings.HasPrefix(t, "-") {
+			rest = append(rest, t)
+			continue
+		}
+		name, _, hasEq := strings.Cut(strings.TrimLeft(t, "-"), "=")
+		flags = append(flags, t)
+		if valueFlags[name] && !hasEq {
+			if i+1 >= len(argv) {
+				return nil, fmt.Errorf("%s needs a value", t)
+			}
+			flags = append(flags, argv[i+1])
+			i++
+		}
+	}
+	if err := fs.Parse(flags); err != nil {
+		return nil, err
+	}
+	return rest, nil
 }
 
 const goldenPath = `toolhost — one governed front door between your agent and your MCP servers
