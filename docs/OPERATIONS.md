@@ -79,7 +79,7 @@ retries. Every drop and reconnect is audited (`backend_error` /
 - Atomic saves (tmp+rename) mean the watcher never reads a torn write.
   An invalid config keeps the current surface and audits `reload` + err.
 - Modern stateless subscribers, legacy stateful clients, and stdio clients
-  can receive `tools/list_changed`. The `toolhost__list`/`search`/`call`
+  can receive `tools/list_changed`. The `gateway__discover`/`call`
   meta-tools provide a pull path when the client does not refresh.
 
 ## Files

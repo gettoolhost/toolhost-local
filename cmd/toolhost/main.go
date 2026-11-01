@@ -22,8 +22,14 @@ const cfgFlagUsage = "config path (default: private env, else ./.toolhost/toolho
 
 func main() {
 	if len(os.Args) < 2 {
-		usage()
-		os.Exit(2)
+		// Bare toolhost is adaptive: no env → the golden path; an env → status.
+		if _, statErr := os.Stat(config.DefaultPath("")); statErr == nil {
+			_ = app.Status(context.Background(), config.DefaultPath(""), false, os.Stdout)
+		} else {
+			fmt.Fprint(os.Stdout, goldenPath)
+			os.Exit(2)
+		}
+		return
 	}
 
 	var err error
@@ -45,38 +51,37 @@ func main() {
 			err = app.Init(config.DefaultPath(*cfg), os.Stdout)
 		}
 
+	case "mcp":
+		err = app.MCP(context.Background(), os.Args[2:], os.Stdout)
+
 	case "discover":
 		fs := flag.NewFlagSet("discover", flag.ExitOnError)
 		cfg := fs.String("c", "", cfgFlagUsage)
+		asJSON := fs.Bool("json", false, "machine-readable catalog")
 		_ = fs.Parse(os.Args[2:])
-		err = app.Discover(context.Background(), config.DefaultPath(*cfg), os.Stdout)
-
-	case "auth":
-		fs := flag.NewFlagSet("auth", flag.ExitOnError)
-		cfg := fs.String("c", "", cfgFlagUsage)
-		_ = fs.Parse(os.Args[2:])
-		if fs.NArg() != 1 {
-			fmt.Fprintln(os.Stderr, "usage: toolhost auth [-c config] <backend>")
-			os.Exit(2)
-		}
-		err = app.Auth(context.Background(), config.DefaultPath(*cfg), fs.Arg(0), os.Stdout)
+		err = app.Discover(context.Background(), config.DefaultPath(*cfg), *asJSON, os.Stdout)
 
 	case "approve":
 		fs := flag.NewFlagSet("approve", flag.ExitOnError)
 		cfg := fs.String("c", "", cfgFlagUsage)
-		req := fs.Bool("requested", false, "approve every pending agent request")
+		req := fs.Bool("requested", false, "approve every pending agent tool request")
+		dry := fs.Bool("dry-run", false, "show the pins and diff without writing")
 		_ = fs.Parse(os.Args[2:])
 		if *req {
 			err = app.ApproveRequested(context.Background(), config.DefaultPath(*cfg), os.Stdout)
 		} else {
-			err = app.EditApprovals(context.Background(), config.DefaultPath(*cfg), fs.Args(), true, os.Stdout)
+			err = app.EditApprovals(context.Background(), config.DefaultPath(*cfg), fs.Args(), true, *dry, os.Stdout)
 		}
 
 	case "revoke":
 		fs := flag.NewFlagSet("revoke", flag.ExitOnError)
 		cfg := fs.String("c", "", cfgFlagUsage)
+		dry := fs.Bool("dry-run", false, "show the diff without writing")
 		_ = fs.Parse(os.Args[2:])
-		err = app.EditApprovals(context.Background(), config.DefaultPath(*cfg), fs.Args(), false, os.Stdout)
+		err = app.EditApprovals(context.Background(), config.DefaultPath(*cfg), fs.Args(), false, *dry, os.Stdout)
+
+	case "requests":
+		err = app.Requests(context.Background(), os.Args[2:], os.Stdout)
 
 	case "enable", "disable":
 		fs := flag.NewFlagSet(os.Args[1], flag.ExitOnError)
@@ -84,16 +89,6 @@ func main() {
 		only := fs.Bool("only", false, "enable exactly these tools, hiding the rest")
 		_ = fs.Parse(os.Args[2:])
 		err = app.EditEnabled(config.DefaultPath(*cfg), fs.Args(), os.Args[1] == "enable", *only, os.Stdout)
-
-	case "logout":
-		fs := flag.NewFlagSet("logout", flag.ExitOnError)
-		cfg := fs.String("c", "", cfgFlagUsage)
-		_ = fs.Parse(os.Args[2:])
-		if fs.NArg() != 1 {
-			fmt.Fprintln(os.Stderr, "usage: toolhost logout [-c config] <backend>")
-			os.Exit(2)
-		}
-		err = app.Logout(config.DefaultPath(*cfg), fs.Arg(0), os.Stdout)
 
 	case "audit":
 		fs := flag.NewFlagSet("audit", flag.ExitOnError)
@@ -151,8 +146,9 @@ func main() {
 	case "status":
 		fs := flag.NewFlagSet("status", flag.ExitOnError)
 		cfg := fs.String("c", "", cfgFlagUsage)
+		asJSON := fs.Bool("json", false, "machine-readable report")
 		_ = fs.Parse(os.Args[2:])
-		err = app.Status(context.Background(), config.DefaultPath(*cfg), os.Stdout)
+		err = app.Status(context.Background(), config.DefaultPath(*cfg), *asJSON, os.Stdout)
 
 	case "install", "uninstall":
 		fs := flag.NewFlagSet(os.Args[1], flag.ExitOnError)
@@ -163,12 +159,19 @@ func main() {
 	case "version":
 		fmt.Println("toolhost", core.Version)
 
+	case "completion":
+		err = app.Completion(os.Args[2:], os.Stdout)
+
 	case "help", "-h", "--help":
-		usage()
+		app.Help(os.Args[2:], os.Stderr)
 
 	default:
-		fmt.Fprintf(os.Stderr, "toolhost: unknown command %q\n\n", os.Args[1])
-		usage()
+		fmt.Fprintf(os.Stderr, "toolhost: unknown command %q", os.Args[1])
+		if near := app.Suggest(os.Args[1]); near != "" {
+			fmt.Fprintf(os.Stderr, " — did you mean %q?", near)
+		}
+		fmt.Fprintln(os.Stderr)
+		app.Help(nil, os.Stderr)
 		os.Exit(2)
 	}
 
@@ -178,39 +181,14 @@ func main() {
 	}
 }
 
-func usage() {
-	fmt.Fprint(os.Stderr, `toolhost — one governed front door between your agent and your MCP servers
+const goldenPath = `toolhost — one governed front door between your agent and your MCP servers
 
-  toolhost init       write the global config with a fresh bearer token
-                      --project = this folder's private env (~/.toolhost/projects/)
-                      --shared  = committable ./.toolhost/toolhost.json (no literal secret)
-  toolhost discover   list every tool your backends expose (backend__tool)
-  toolhost approve    approve qualified tool names, e.g. fs__read_file
-                      --requested = approve every pending agent request
-  toolhost revoke     revoke qualified tool names
-  toolhost enable     put approved tools on the live surface (no args = all)
-                      --only <tools> = surface is exactly these
-  toolhost disable    hide approved tools without un-approving them
-  toolhost auth       grant upstream OAuth for a backend (browser flow)
-  toolhost logout     drop a backend's stored upstream grant
-  toolhost attach     register the gateway with an MCP client
-                      no args = survey every known client (attached or not)
-                      <claude|claude-desktop|cline|codex|cursor|devin|gemini|opencode|roo|vscode|windsurf|zed>
-                      --project = write this folder's project file (local-gateway)
-                      --stdio · --print · --dry-run
-  toolhost audit      tail the audit log (gateway need not be running)
-                      -n 20 · -kind tool_call
-  toolhost doctor     check an install end to end (config, token, backends)
-  toolhost status     gateway health: backends up/down, counts, requests
-  toolhost serve      serve /mcp — Authorization: Bearer <token>
-                      --stdio = speak MCP on stdin/stdout (attach to any client)
-  toolhost install    register serve as a service (launchd / systemd --user)
-  toolhost uninstall  remove the service
-  toolhost version
+  toolhost init                  write the config + a fresh bearer token
+  toolhost mcp add fs -- npx -y @modelcontextprotocol/server-filesystem /tmp
+  toolhost discover              every tool the backend exposes
+  toolhost approve fs__read_file approve what the agent may use
+  toolhost serve                 run the governed /mcp
+  toolhost attach claude         give the client one server: local-gateway
 
-all commands take -c <path> — default resolves nearest scope first:
-this folder's private env (~/.toolhost/projects/<id>/toolhost.json),
-then ./.toolhost/toolhost.json, then ~/.toolhost/toolhost.json
-(TOOLHOST_HOME honored)
-`)
-}
+  toolhost help                  every verb, grouped by job
+`

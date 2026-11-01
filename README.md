@@ -5,9 +5,9 @@
 [![MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/gettoolhost/toolhost-local?label=release)](https://github.com/gettoolhost/toolhost-local/releases)
 
-**A local-first MCP gateway that exposes only the tools you approve.**
+**A Local MCP Gateway: every MCP server behind one endpoint, only the tools you approve on it.**
 
-Toolhost connects AI agents to multiple Model Context Protocol servers through one bearer-gated `/mcp` endpoint. It discovers upstream tools, lets a human approve them, and registers only the enabled subset. Each governed call adds a JSONL audit record.
+Toolhost connects AI agents to your MCP servers through one bearer-gated `/mcp`. You register servers once — with the same `mcp add` grammar every client CLI already taught you — approve the tools an agent may use, and the agent self-serves inside that envelope. Every governed call adds a JSONL audit record.
 
 ![Toolhost: one front door, only approved tools](assets/toolhost-cover.svg)
 
@@ -21,29 +21,33 @@ go build -o toolhost ./cmd/toolhost
 # wrote ~/.toolhost/toolhost.json — a private env for this folder is
 # `./toolhost init --project`; a committable ./.toolhost/toolhost.json is
 # `./toolhost init --shared`
-${EDITOR:-vi} ~/.toolhost/toolhost.json
-# add the "fs" backend from the config sample below
+./toolhost mcp add fs -- npx -y @modelcontextprotocol/server-filesystem /tmp
+# added backend fs (stdio) — the `X mcp add` grammar, pointed at one registry
 ./toolhost discover
 #   fs__read_file  <upstream description>
 ./toolhost approve fs__read_file
-# approved fs__read_file
+# approved fs__read_file — schema-pinned to the contract you just reviewed
 ./toolhost serve
 # toolhost <version> serving 1 tool on http://127.0.0.1:8080/mcp (...)
 ```
 
 - Point a Streamable HTTP MCP client at `http://127.0.0.1:8080/mcp` with `Authorization: Bearer <token from toolhost.json>` — or attach your agent: `toolhost attach <client>` (user level) / `toolhost attach --project <client>` (this folder). The server entry is always named `local-gateway`.
-- Tool calls append `tool_call` records to `toolhost_audit.jsonl` in the env's state dir; rejected `toolhost__call` requests and failed authentication are recorded too.
+- Tool calls append `tool_call` records to `toolhost_audit.jsonl` in the env's state dir; rejected `gateway__call` requests and failed authentication are recorded too.
 
 | Capability | What ships |
 |---|---|
-| One endpoint | An MCP proxy for upstream stdio, Streamable HTTP, and SSE servers. |
+| One endpoint | An MCP proxy for upstream stdio, Streamable HTTP, and SSE servers — every client sees one `local-gateway` entry. |
+| Server registry | `toolhost mcp add/list/get/remove/enable/disable/test/tools/import` — the familiar `X mcp` verbs, normalized into `toolhost.json`. |
 | Access | Downstream bearer check; upstream none, bearer, client credentials, or OAuth with PKCE. |
-| Agent controls | `toolhost__search/list/call/enable/disable/request/audit/status` for a pull-based control plane. |
+| Agent controls | `gateway__discover/call/enable/disable/request` — five verbs, a pull-based control plane; `status`/`audit` stay CLI-side. |
+| Petitions | Agents ask via `gateway__request` (tools, or whole proposed servers); humans answer with `toolhost requests --accept/--deny`. |
 | Tool allowlist | `core.Resolve` registers only discovered, approved, enabled tools; invisible tools have no call handler. |
 | Audit log | JSONL events for governed calls, auth failures, agent governance actions, backend errors, and reloads. |
 | Local operation | One Go binary, JSON config, no database; config edits hot-reload the live surface. |
 
 ## Three-tier gate
+
+![The three-tier gate: discovered, approved, enabled](assets/tiers.svg)
 
 | Tier | Owner | Effect |
 |---|---|---|
@@ -52,11 +56,11 @@ ${EDITOR:-vi} ~/.toolhost/toolhost.json
 | Enabled | Agent or human, within approved set | Visible and callable as `backend__tool`. |
 
 - `discovered ≠ approved ≠ enabled`. With no `enabled` list, every approved tool is enabled; `"enabled": []` exposes none.
-- `toolhost__request` queues an approval ask. It never approves a tool.
+- `gateway__request` queues an approval ask — or a proposed server. It never approves anything.
 
 ## Config
 
-`toolhost init` writes the bearer token and empty `backends`/`approved` lists. Add the backend below, then run `toolhost discover` and approve the qualified names you need:
+`toolhost init` writes the bearer token and empty `backends`/`approved` lists; `mcp add` fills `backends`. Hand-editing works too — this is the whole shape:
 
 ```json
 {

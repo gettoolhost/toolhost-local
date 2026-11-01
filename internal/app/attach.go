@@ -948,9 +948,9 @@ func redactTokenBytes(b []byte, token string) []byte {
 
 func devinArgs(url, token, bin, cfg string, stdio bool) []string {
 	if stdio {
-		return []string{"devin", "mcp", "add", "-s", "user", "toolhost", "--", bin, "serve", "--stdio", "-c", cfg}
+		return []string{"devin", "mcp", "add", "-s", "user", entryName, "--", bin, "serve", "--stdio", "-c", cfg}
 	}
-	return []string{"devin", "mcp", "add", "-s", "user", "toolhost", url, "-H", "Authorization: Bearer " + token}
+	return []string{"devin", "mcp", "add", "-s", "user", entryName, url, "-H", "Authorization: Bearer " + token}
 }
 
 // codexArgs registers through `codex mcp add`. The HTTP form never
@@ -959,15 +959,15 @@ func devinArgs(url, token, bin, cfg string, stdio bool) []string {
 // name passed.
 func codexArgs(url, token, bin, cfg string, stdio bool) []string {
 	if stdio {
-		return []string{"codex", "mcp", "add", "toolhost", "--", bin, "serve", "--stdio", "-c", cfg}
+		return []string{"codex", "mcp", "add", entryName, "--", bin, "serve", "--stdio", "-c", cfg}
 	}
-	return []string{"codex", "mcp", "add", "toolhost", "--url", url, "--bearer-token-env-var", "TOOLHOST_TOKEN"}
+	return []string{"codex", "mcp", "add", entryName, "--url", url, "--bearer-token-env-var", "TOOLHOST_TOKEN"}
 }
 
 // provisionSkill drops the control-plane SKILL.md into a client's
-// user-level skill directory — the agent learns toolhost__search/enable/
-// request without the human pasting instructions. The file is wholly
-// ours: it carries a marker, refreshes freely on re-attach, and a
+// user-level skill directory — the agent learns gateway__discover/
+// enable/request without the human pasting instructions. The file is
+// wholly ours: it carries a marker, refreshes freely on re-attach, and a
 // markerless existing file is never touched.
 func provisionSkill(t attachTarget, w io.Writer) {
 	if t.skillDir == nil {
@@ -995,7 +995,7 @@ func provisionSkill(t attachTarget, w io.Writer) {
 		fmt.Fprintf(w, "note: cannot write %s: %v\n", path, err)
 		return
 	}
-	fmt.Fprintf(w, "wrote %s — %s learns the toolhost__* control plane\n", path, t.display)
+	fmt.Fprintf(w, "wrote %s — %s learns the gateway__* control plane\n", path, t.display)
 }
 
 // skillMarker identifies a SKILL.md written by attach — the ownership
@@ -1003,18 +1003,18 @@ func provisionSkill(t attachTarget, w io.Writer) {
 const skillMarker = "<!-- installed by toolhost attach -->"
 
 // skillDoc is the provisioned control-plane skill — the agent-facing
-// manual for the toolhost__* tools. Kept generic: no repo paths, no
+// manual for the gateway__* tools. Kept generic: no repo paths, no
 // machine specifics, so the same file serves every client and host.
 const skillDoc = skillMarker + `
 ---
-name: toolhost-gateway
-description: How to use a toolhost MCP gateway — one governed /mcp endpoint fronting many MCP servers behind a three-tier tool gate (discovered/approved/enabled). Use when toolhost__* tools appear in the MCP surface, when a needed tool isn't available and a toolhost gateway may front it, or when asked to enable/request tools on a governed gateway.
+name: local-gateway
+description: How to use a Local MCP Gateway — one governed /mcp endpoint fronting many MCP servers behind a three-tier tool gate (discovered/approved/enabled). Use when gateway__* tools appear in the MCP surface, when a needed tool isn't available and a gateway may front it, or when asked to enable/request tools or servers on a governed gateway.
 ---
 
-# toolhost — the governed MCP gateway
+# local-gateway — the governed MCP gateway
 
-toolhost fronts N upstream MCP servers behind one bearer-gated /mcp
-endpoint. Agent-facing tools are namespaced ` + "`backend__tool`" + `. The gate:
+A Local MCP Gateway fronts N upstream MCP servers behind one bearer-gated
+/mcp endpoint. Agent-facing tools are namespaced ` + "`backend__tool`" + `. The gate:
 
 ` + "```" + `
 discovered → approved (HUMAN policy) → enabled (live surface)
@@ -1022,33 +1022,31 @@ discovered → approved (HUMAN policy) → enabled (live surface)
 
 A tool not on the live surface is invisible AND uncallable — by design.
 
-## If toolhost__* tools are in your surface
+## If gateway__* tools are in your surface
 
 You are attached to a gateway. Self-serve — do not ask the human to edit
-MCP config:
+MCP config. Five verbs, one per transition:
 
 | tool | use |
 |---|---|
-| ` + "`toolhost__search`" + ` ` + "`{query}`" + ` | catalog search → qualified names + approved/enabled/requested state |
-| ` + "`toolhost__list`" + ` ` + "`{scope}`" + ` | ` + "`enabled`" + ` (default) / ` + "`approved`" + ` / ` + "`all`" + ` |
-| ` + "`toolhost__enable`" + ` ` + "`{names[]}`" + ` | move approved tools onto the live surface NOW |
-| ` + "`toolhost__disable`" + ` ` + "`{names[]}`" + ` | pull tools off NOW (they stay approved) |
-| ` + "`toolhost__call`" + ` ` + "`{name, arguments}`" + ` | call any enabled tool by name — works even if the client ignores tools/list_changed |
-| ` + "`toolhost__request`" + ` ` + "`{names[], reason}`" + ` | file an approval ask — queued for the human, never self-approving |
-| ` + "`toolhost__audit`" + ` ` + "`{limit?, kind?}`" + ` | tail the audit log — what was called, failed, refused |
-| ` + "`toolhost__status`" + ` | read-only gateway health: mode, backends, counts, pending asks |
+| ` + "`gateway__discover`" + ` ` + "`{query?, scope?}`" + ` | the catalog — names + approved/enabled/requested/denied state. scope: ` + "`all`" + ` (default) / ` + "`enabled`" + ` / ` + "`approved`" + ` / ` + "`discovered`" + ` |
+| ` + "`gateway__enable`" + ` ` + "`{names[]}`" + ` | move approved tools onto the live surface NOW |
+| ` + "`gateway__disable`" + ` ` + "`{names[]}`" + ` | pull tools off NOW (they stay approved) |
+| ` + "`gateway__call`" + ` ` + "`{name, arguments}`" + ` | call any enabled tool by name — works even if the client ignores tools/list_changed |
+| ` + "`gateway__request`" + ` ` + "`{names[]?, servers[]?, reason}`" + ` | petition a human — tool approvals, or whole proposed servers ({name, transport, url|command+args}) |
 
-**The loop**: need a tool → ` + "`search`" + ` → if approved-but-disabled,
-` + "`enable`" + ` it → call it → ` + "`disable`" + ` when done to keep the
-surface lean.
+**The loop**: need a tool → ` + "`discover`" + ` → if approved-but-disabled,
+` + "`enable`" + ` it → ` + "`call`" + ` it → ` + "`disable`" + ` when done
+to keep the surface lean.
 
 **The boundary**: agents move tools between approved and enabled. Only
-humans approve. If ` + "`search`" + ` shows ` + "`approved: false`" + `,
-file ` + "`toolhost__request`" + ` with a reason — it lands where the
-human sees it (` + "`toolhost status`" + `) — then the human runs
-` + "`toolhost approve <name>`" + ` (or ` + "`toolhost approve --requested`" + `
-to drain the queue). A request approves nothing by itself; never try to
-route around it. Every enable/disable/call/request is audited.
+humans approve. If ` + "`discover`" + ` shows ` + "`approved: false`" + `,
+file ` + "`gateway__request`" + ` with a reason — it lands in the human's
+queue (` + "`toolhost requests`" + `), who may grant or deny it; a denied
+petition comes back as ` + "`denied`" + ` in the next discover, so don't
+re-ask. Need a server that isn't there at all? Petition with
+` + "`servers`" + ` — the human materializes it. Nothing grants itself;
+every discover/enable/disable/call/request is audited.
 `
 
 func homeJoin(elem ...string) (string, error) {

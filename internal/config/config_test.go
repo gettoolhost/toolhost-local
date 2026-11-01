@@ -462,3 +462,100 @@ func TestAuditMaxMBBound(t *testing.T) {
 		}
 	}
 }
+
+// The petition queue is polymorphic: tool asks and server proposals share
+// the file, dedupe by name, and a denial is a verdict — the same ask comes
+// back refused, not re-queued.
+func TestRequestQueuePolymorphic(t *testing.T) {
+	t.Setenv("TOOLHOST_HOME", t.TempDir())
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "toolhost.json")
+	f := &File{Mode: ModeStateless, Backends: map[string]*Backend{}}
+	if err := f.Save(cfgPath); err != nil {
+		t.Fatal(err)
+	}
+
+	// A tool petition queues.
+	added, err := AppendRequests(cfgPath, f.ApprovedSet(), "need it", "fs__write")
+	if err != nil || len(added) != 1 {
+		t.Fatalf("tool petition: %v %v", added, err)
+	}
+	// Denied petitions refuse re-asking with the reason.
+	if err := DenyRequest(cfgPath, "fs__write", "not today"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AppendRequests(cfgPath, f.ApprovedSet(), "again", "fs__write"); err == nil ||
+		!strings.Contains(err.Error(), "not today") {
+		t.Fatalf("denied petition must refuse re-ask with reason: %v", err)
+	}
+	reqs, _ := LoadRequests(cfgPath)
+	if len(PendingRequests(reqs)) != 0 || DeniedSet(reqs)["fs__write"] != "not today" {
+		t.Fatalf("denied must drop out of pending but keep the verdict: %+v", reqs)
+	}
+
+	// A server petition validates the spec against backend rules.
+	err = AppendServerRequest(cfgPath, f, Request{
+		Name: "wiki", Transport: "http", URL: "https://w.example/mcp", Reason: "docs",
+	})
+	if err != nil {
+		t.Fatalf("server petition: %v", err)
+	}
+	// Same name → deduped, not doubled.
+	if err := AppendServerRequest(cfgPath, f, Request{
+		Name: "wiki", Transport: "http", URL: "https://w.example/mcp",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reqs, _ = LoadRequests(cfgPath)
+	var servers int
+	for _, r := range reqs {
+		if r.Kind == RequestServer {
+			servers++
+		}
+	}
+	if servers != 1 {
+		t.Fatalf("want exactly one server petition, got %+v", reqs)
+	}
+	// A name that already is a backend refuses — request its tools instead.
+	f.Backends["wiki"] = &Backend{Transport: "http", URL: "https://w.example/mcp"}
+	if err := AppendServerRequest(cfgPath, f, Request{
+		Name: "wiki", Transport: "http", URL: "https://w.example/mcp",
+	}); err == nil || !strings.Contains(err.Error(), "already configured") {
+		t.Fatalf("existing backend must refuse the petition: %v", err)
+	}
+	// And a malformed spec fails closed.
+	if err := AppendServerRequest(cfgPath, f, Request{
+		Name: "bad__name", Transport: "http", URL: "https://x/mcp",
+	}); err == nil {
+		t.Fatal("invalid backend name must refuse")
+	}
+}
+
+// mcp remove's cascade: approval-holding namespaces refuse until pruned,
+// and pruning drops approvals + enabled entries without touching the rest.
+func TestBackendCascade(t *testing.T) {
+	f := &File{Mode: ModeStateless, Backends: map[string]*Backend{
+		"fs": {Transport: "stdio", Command: "x"},
+		"gh": {Transport: "http", URL: "https://x"},
+	}}
+	f.Approved = []string{"fs__a", "fs__b", "gh__c"}
+	en := []string{"fs__a", "gh__c"}
+	f.Enabled = &en
+
+	if got := f.BackendToolsApproved("fs"); len(got) != 2 {
+		t.Fatalf("cascade check: %v", got)
+	}
+	pruned := f.PruneBackendTools("fs")
+	if len(pruned) != 2 {
+		t.Fatalf("prune: %v", pruned)
+	}
+	if len(f.Approved) != 1 || f.Approved[0] != "gh__c" {
+		t.Fatalf("other namespaces must survive: %v", f.Approved)
+	}
+	if en2, _ := f.EnabledSet(); len(en2) != 1 || !en2["gh__c"] {
+		t.Fatalf("enabled must lose only fs__ names: %v", en2)
+	}
+	if !f.RemoveBackend("fs") || f.RemoveBackend("fs") {
+		t.Fatal("RemoveBackend must report exactly one removal")
+	}
+}

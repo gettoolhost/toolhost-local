@@ -16,6 +16,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/gettoolhost/toolhost-local/internal/core"
+	"github.com/gettoolhost/toolhost-local/internal/namespace"
 )
 
 // Server is the governed /mcp endpoint plus an unauthenticated /healthz.
@@ -33,26 +34,31 @@ type Server struct {
 }
 
 // Meta wires the gateway's own control-plane tools — registered under the
-// reserved toolhost__ namespace and always present regardless of the
+// reserved gateway__ namespace and always present regardless of the
 // governed surface. They let the agent discover and control tools at
 // runtime; approval still gates enablement (enforced in the
 // implementation, not here).
 type Meta struct {
-	Search  func(ctx context.Context, query string) ([]core.ToolInfo, error)
-	List    func(ctx context.Context, scope string) ([]core.ToolInfo, error)
-	Enable  func(ctx context.Context, names []string) ([]string, error)
-	Disable func(ctx context.Context, names []string) ([]string, error)
-	// Request files an approval request for unapproved tools — the agent's
-	// formal ask; a human still approves. Returns the newly queued names.
-	Request func(ctx context.Context, names []string, reason string) ([]string, error)
+	// Discover is the agent's catalog view — search and list folded into
+	// one revelation verb: query matches name/description, scope narrows
+	// ("all" default, "enabled", "approved").
+	Discover func(ctx context.Context, query, scope string) ([]core.ToolInfo, error)
+	Enable   func(ctx context.Context, names []string) ([]string, error)
+	Disable  func(ctx context.Context, names []string) ([]string, error)
+	// Request files petitions — unapproved tool names, or whole proposed
+	// servers the human may materialize. Returns the newly queued names.
+	// A request never widens anything by itself; a human answers it.
+	Request func(ctx context.Context, names []string, servers []core.ServerSpec, reason string) ([]string, error)
 	// Status reports one qualified name's governance state — used to give
 	// precise refusal reasons ("approved but disabled" vs "not approved").
 	Status func(name string) (core.ToolInfo, bool)
-	// Report returns the live gateway status for toolhost__status.
+	// BackendState reports a namespace's liveness for refusal precision:
+	// "up", "down" (configured but unreachable — reconnecting), "disabled"
+	// (parked by a human), or "" when the namespace isn't configured.
+	BackendState func(ns string) string
+	// Report returns the live gateway status — served at GET /status for
+	// the CLI and harnesses, never exposed as a tool.
 	Report func() any
-	// Audit tails the audit log — the evidence trail of calls, denials, and
-	// governance actions — so agents can introspect without file access.
-	Audit func(ctx context.Context, limit int, kind string) ([]core.Event, error)
 	// CallErr reports a backend Call failure with the session that served
 	// it — the gateway uses it to retire dead sessions Wait() can't see.
 	CallErr func(up core.Upstream, err error)
@@ -89,6 +95,20 @@ func New(res *core.Resolution, token string, sink core.AuditSink, meta *Meta, op
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
 	})
+	if meta != nil && meta.Report != nil {
+		// GET /status is the admin read: the CLI's live view and the
+		// harness's polling surface. An HTTP endpoint, not a tool — the
+		// agent's tools/list stays pure capability.
+		mux.Handle("GET /status", bearer(token, sink, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			raw, err := json.Marshal(meta.Report())
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			_, _ = w.Write(raw)
+		})))
+	}
 	s.handler = mux
 
 	return s, nil
@@ -105,7 +125,7 @@ func buildServer(res *core.Resolution, sink core.AuditSink, meta *Meta) *Server 
 		sink = discard{}
 	}
 	srv := mcp.NewServer(&mcp.Implementation{
-		Name:    "toolhost",
+		Name:    "local-gateway",
 		Version: core.Version,
 	}, &mcp.ServerOptions{Capabilities: &mcp.ServerCapabilities{
 		Tools: &mcp.ToolCapabilities{ListChanged: true},
@@ -199,46 +219,38 @@ func (s *Server) Reload(res *core.Resolution) {
 	}
 }
 
-// addMetaTools registers the toolhost__* control plane. These are never in
-// live, so Reload can never drop them — the control plane survives every
-// surface swap.
+// addMetaTools registers the gateway__* control plane — five verbs, one
+// per tier transition: discover (see), enable (self-serve), disable
+// (release), call (invoke), request (petition a human). These are never
+// in live, so Reload can never drop them — the control plane survives
+// every surface swap.
 func (s *Server) addMetaTools(m *Meta) {
 	srv := s.mcp
 
 	srv.AddTool(&mcp.Tool{
-		Name: "toolhost__search",
-		Description: "Search toolhost's governed tool catalog by name or description. " +
-			"Returns qualified names with approved/enabled state. Approved-but-disabled " +
-			"tools can be switched on with toolhost__enable; unapproved tools need a " +
-			"human to run `toolhost approve`.",
-		InputSchema: objSchema("query", "string", "search text matched against tool names and descriptions"),
+		Name: "gateway__discover",
+		Description: "Discover the governed tool catalog — what exists beyond your live " +
+			"surface. Empty query lists everything; a query matches names and descriptions. " +
+			"Results carry governance state: enabled (callable now), approved (switch on " +
+			"yourself with gateway__enable), discovered (needs a human — file " +
+			"gateway__request), denied (a human refused it). Optional scope narrows: " +
+			"\"all\" (default), \"enabled\", \"approved\", \"discovered\".",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"query": map[string]any{"type": "string", "description": "match text against tool names and descriptions (empty = everything)"},
+				"scope": map[string]any{"type": "string", "description": `optional: "all" (default), "enabled", "approved", "discovered"`},
+			},
+		},
 	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var a struct {
 			Query string `json:"query"`
-		}
-		if err := json.Unmarshal(req.Params.Arguments, &a); err != nil {
-			return errResult("bad arguments: " + err.Error()), nil
-		}
-		infos, err := m.Search(ctx, a.Query)
-		if err != nil {
-			return errResult(err.Error()), nil
-		}
-		return jsonResult(infos), nil
-	})
-
-	srv.AddTool(&mcp.Tool{
-		Name: "toolhost__list",
-		Description: "List governed tools by scope: \"enabled\" (the live surface, default), " +
-			"\"approved\" (policy-permitted), or \"all\" (everything discovered).",
-		InputSchema: objSchema("scope", "string", `one of "enabled" (default), "approved", "all"`),
-	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		var a struct {
 			Scope string `json:"scope"`
 		}
 		if err := json.Unmarshal(req.Params.Arguments, &a); err != nil {
 			return errResult("bad arguments: " + err.Error()), nil
 		}
-		infos, err := m.List(ctx, a.Scope)
+		infos, err := m.Discover(ctx, a.Query, a.Scope)
 		if err != nil {
 			return errResult(err.Error()), nil
 		}
@@ -246,7 +258,46 @@ func (s *Server) addMetaTools(m *Meta) {
 	})
 
 	srv.AddTool(&mcp.Tool{
-		Name: "toolhost__call",
+		Name: "gateway__enable",
+		Description: "Enable approved tools by qualified name — they join the live surface " +
+			"immediately (subscribed clients get tools/list_changed). Only approved tools can be " +
+			"enabled; approval is a human decision. Unapproved names need gateway__request.",
+		InputSchema: objSchema("names", "array", "qualified tool names to enable"),
+	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		var a struct {
+			Names []string `json:"names"`
+		}
+		if err := json.Unmarshal(req.Params.Arguments, &a); err != nil {
+			return errResult("bad arguments: " + err.Error()), nil
+		}
+		changed, err := m.Enable(ctx, a.Names)
+		if err != nil {
+			return errResult(err.Error()), nil
+		}
+		return jsonResult(map[string]any{"enabled": changed}), nil
+	})
+
+	srv.AddTool(&mcp.Tool{
+		Name: "gateway__disable",
+		Description: "Disable tools by qualified name — they leave the live surface " +
+			"immediately and become uncallable. They stay approved; re-enable any time.",
+		InputSchema: objSchema("names", "array", "qualified tool names to disable"),
+	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		var a struct {
+			Names []string `json:"names"`
+		}
+		if err := json.Unmarshal(req.Params.Arguments, &a); err != nil {
+			return errResult("bad arguments: " + err.Error()), nil
+		}
+		changed, err := m.Disable(ctx, a.Names)
+		if err != nil {
+			return errResult(err.Error()), nil
+		}
+		return jsonResult(map[string]any{"disabled": changed}), nil
+	})
+
+	srv.AddTool(&mcp.Tool{
+		Name: "gateway__call",
 		Description: "Call a governed tool by qualified name (backend__tool) without it " +
 			"being in the listed surface — the escape hatch for clients that don't refresh " +
 			"on tools/list_changed. Only enabled tools dispatch; enable first if needed.",
@@ -275,12 +326,29 @@ func (s *Server) addMetaTools(m *Meta) {
 			switch {
 			case found && info.Drifted:
 				return errResult(fmt.Sprintf("%q's schema changed since approval — a human must re-approve: toolhost approve %s", a.Name, a.Name)), nil
+			case found && info.Denied:
+				why := info.DeniedReason
+				if why == "" {
+					why = "no reason given"
+				}
+				return errResult(fmt.Sprintf("%q was denied by a human — %s", a.Name, why)), nil
 			case found && info.Approved:
-				return errResult(fmt.Sprintf("%q is approved but disabled — enable it with toolhost__enable", a.Name)), nil
+				return errResult(fmt.Sprintf("%q is approved but disabled — enable it with gateway__enable", a.Name)), nil
 			case found:
-				return errResult(fmt.Sprintf("%q is discovered but not approved — a human must run: toolhost approve %s", a.Name, a.Name)), nil
+				return errResult(fmt.Sprintf("%q is discovered but not approved — ask a human with gateway__request", a.Name)), nil
 			default:
-				return errResult(fmt.Sprintf("unknown tool %q — try toolhost__search", a.Name)), nil
+				// Not in the catalog — but its backend may exist and be
+				// dead or parked, which is a very different answer than
+				// "unknown tool".
+				if ns, _, err := namespace.Split(a.Name); err == nil {
+					switch m.BackendState(ns) {
+					case "down":
+						return errResult(fmt.Sprintf("backend %q is down — reconnecting; try again shortly", ns)), nil
+					case "disabled":
+						return errResult(fmt.Sprintf("backend %q is disabled — a human can re-enable it: toolhost mcp enable %s", ns, ns)), nil
+					}
+				}
+				return errResult(fmt.Sprintf("unknown tool %q — try gateway__discover", a.Name)), nil
 			}
 		}
 		start := time.Now()
@@ -303,112 +371,39 @@ func (s *Server) addMetaTools(m *Meta) {
 	})
 
 	srv.AddTool(&mcp.Tool{
-		Name: "toolhost__enable",
-		Description: "Enable approved tools by qualified name — they join the live surface " +
-			"immediately (subscribed clients get tools/list_changed). Only approved tools can be " +
-			"enabled; approval is a human decision.",
-		InputSchema: objSchema("names", "array", "qualified tool names to enable"),
-	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		var a struct {
-			Names []string `json:"names"`
-		}
-		if err := json.Unmarshal(req.Params.Arguments, &a); err != nil {
-			return errResult("bad arguments: " + err.Error()), nil
-		}
-		changed, err := m.Enable(ctx, a.Names)
-		if err != nil {
-			return errResult(err.Error()), nil
-		}
-		return jsonResult(map[string]any{"enabled": changed}), nil
-	})
-
-	srv.AddTool(&mcp.Tool{
-		Name: "toolhost__disable",
-		Description: "Disable tools by qualified name — they leave the live surface " +
-			"immediately and become uncallable. They stay approved.",
-		InputSchema: objSchema("names", "array", "qualified tool names to disable"),
-	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		var a struct {
-			Names []string `json:"names"`
-		}
-		if err := json.Unmarshal(req.Params.Arguments, &a); err != nil {
-			return errResult("bad arguments: " + err.Error()), nil
-		}
-		changed, err := m.Disable(ctx, a.Names)
-		if err != nil {
-			return errResult(err.Error()), nil
-		}
-		return jsonResult(map[string]any{"disabled": changed}), nil
-	})
-
-	srv.AddTool(&mcp.Tool{
-		Name: "toolhost__request",
-		Description: "Ask for unapproved tools by qualified name — files a request the " +
-			"human reviews (toolhost status shows it, toolhost approve answers it). " +
-			"Requesting is not approval: the tool stays locked until a human approves.",
+		Name: "gateway__request",
+		Description: "Petition a human: unapproved tool names via \"names\", or a whole " +
+			"server the gateway should carry via \"servers\" (name + transport + url or " +
+			"command/args — topology only, never credentials). Requests queue for human " +
+			"review; nothing is granted until they act.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"names":  map[string]any{"type": "array", "description": "qualified tool names to request"},
-				"reason": map[string]any{"type": "string", "description": "why these tools are needed"},
+				"names":   map[string]any{"type": "array", "description": "qualified tool names to request"},
+				"servers": map[string]any{"type": "array", "description": "proposed servers: {name, transport: \"stdio\"|\"http\", url? | command?, args?}"},
+				"reason":  map[string]any{"type": "string", "description": "why this is needed — the human reads it"},
 			},
-			"required": []string{"names"},
 		},
 	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var a struct {
-			Names  []string `json:"names"`
-			Reason string   `json:"reason"`
+			Names   []string          `json:"names"`
+			Servers []core.ServerSpec `json:"servers"`
+			Reason  string            `json:"reason"`
 		}
 		if err := json.Unmarshal(req.Params.Arguments, &a); err != nil {
 			return errResult("bad arguments: " + err.Error()), nil
 		}
-		queued, err := m.Request(ctx, a.Names, a.Reason)
+		if len(a.Names) == 0 && len(a.Servers) == 0 {
+			return errResult(`nothing to request — pass "names" (tools) or "servers" (proposals)`), nil
+		}
+		queued, err := m.Request(ctx, a.Names, a.Servers, a.Reason)
 		if err != nil {
 			return errResult(err.Error()), nil
 		}
 		return jsonResult(map[string]any{
 			"requested": queued,
-			"note":      "a human reviews requests — nothing is approved yet",
+			"note":      "a human reviews petitions — nothing is granted yet",
 		}), nil
-	})
-
-	srv.AddTool(&mcp.Tool{
-		Name: "toolhost__audit",
-		Description: "Tail the gateway's audit log — the evidence trail of governed " +
-			"calls, refusals, governance actions, and reloads, newest last. " +
-			"Read-only; never contains arguments or secrets.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"limit": map[string]any{"type": "integer", "description": "max events to return (default 50, cap 500)"},
-				"kind":  map[string]any{"type": "string", "description": `optional filter: tool_call, auth_failed, backend_error, backend_up, tool_forbidden, schema_drift, govern, reload`},
-			},
-		},
-	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		var a struct {
-			Limit int    `json:"limit"`
-			Kind  string `json:"kind"`
-		}
-		if err := json.Unmarshal(req.Params.Arguments, &a); err != nil {
-			return errResult("bad arguments: " + err.Error()), nil
-		}
-		if m.Audit == nil {
-			return errResult("audit log unavailable"), nil
-		}
-		events, err := m.Audit(ctx, a.Limit, a.Kind)
-		if err != nil {
-			return errResult(err.Error()), nil
-		}
-		return jsonResult(events), nil
-	})
-
-	srv.AddTool(&mcp.Tool{
-		Name: "toolhost__status",
-		Description: "Report gateway health: serving mode, per-backend state and tool " +
-			"counts, approved/enabled/requested totals. Read-only.",
-		InputSchema: map[string]any{"type": "object"},
-	}, func(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		return jsonResult(m.Report()), nil
 	})
 }
 

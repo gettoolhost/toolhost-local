@@ -323,8 +323,8 @@ func TestResolveEnabledSubset(t *testing.T) {
 	}
 }
 
-// The gateway's own toolhost__* control plane, over a real Serve: the agent
-// searches the catalog, enables an approved-but-disabled tool, calls it
+// The gateway's own gateway__* control plane, over a real Serve: the agent
+// discovers the catalog, enables an approved-but-disabled tool, calls it
 // through the escape hatch, and disables it again — all inside the session.
 func TestMetaToolsEndToEnd(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -394,11 +394,14 @@ func TestMetaToolsEndToEnd(t *testing.T) {
 	for _, tl := range listed.Tools {
 		names[tl.Name] = true
 	}
-	for _, want := range []string{"up__echo", "toolhost__search", "toolhost__list", "toolhost__call",
-		"toolhost__enable", "toolhost__disable", "toolhost__request", "toolhost__status"} {
+	for _, want := range []string{"up__echo", "gateway__discover", "gateway__call",
+		"gateway__enable", "gateway__disable", "gateway__request"} {
 		if !names[want] {
 			t.Fatalf("surface missing %q — got %v", want, names)
 		}
+	}
+	if names["toolhost__search"] || names["toolhost__list"] || names["toolhost__status"] || names["toolhost__audit"] {
+		t.Fatalf("legacy meta tools still registered — got %v", names)
 	}
 	if names["up__secret"] {
 		t.Fatal("disabled tool leaked into the surface")
@@ -416,30 +419,30 @@ func TestMetaToolsEndToEnd(t *testing.T) {
 		return res.Content[0].(*mcp.TextContent).Text
 	}
 
-	// Search finds the disabled tool with its governance state.
-	res := call("toolhost__search", map[string]any{"query": "secret"})
+	// Discover finds the disabled tool with its governance state.
+	res := call("gateway__discover", map[string]any{"query": "secret"})
 	if res.IsError || !strings.Contains(text(res), "up__secret") {
-		t.Fatalf("search for secret: %v", text(res))
+		t.Fatalf("discover for secret: %v", text(res))
 	}
 
 	// The escape hatch refuses a disabled tool — with the remedy.
-	res = call("toolhost__call", map[string]any{"name": "up__secret", "arguments": map[string]any{}})
+	res = call("gateway__call", map[string]any{"name": "up__secret", "arguments": map[string]any{}})
 	if !res.IsError || !strings.Contains(text(res), "approved but disabled") {
 		t.Fatalf("call disabled tool: want precise refusal, got %v", text(res))
 	}
 
 	// Agent enables it at runtime — approval gate holds for unknown names.
-	res = call("toolhost__enable", map[string]any{"names": []string{"up__nope"}})
+	res = call("gateway__enable", map[string]any{"names": []string{"up__nope"}})
 	if !res.IsError || !strings.Contains(text(res), "not approved") {
 		t.Fatalf("enable unapproved: want refusal, got %v", text(res))
 	}
-	res = call("toolhost__enable", map[string]any{"names": []string{"up__secret"}})
+	res = call("gateway__enable", map[string]any{"names": []string{"up__secret"}})
 	if res.IsError {
 		t.Fatalf("enable approved: %v", text(res))
 	}
 
 	// Callable via the meta escape hatch without waiting for list_changed.
-	res = call("toolhost__call", map[string]any{"name": "up__secret", "arguments": map[string]any{}})
+	res = call("gateway__call", map[string]any{"name": "up__secret", "arguments": map[string]any{}})
 	if res.IsError || text(res) != "leaked" {
 		t.Fatalf("call newly-enabled tool: got %v", text(res))
 	}
@@ -454,13 +457,13 @@ func TestMetaToolsEndToEnd(t *testing.T) {
 	}
 
 	// And back off again — runtime governance in both directions.
-	res = call("toolhost__disable", map[string]any{"names": []string{"up__secret"}})
+	res = call("gateway__disable", map[string]any{"names": []string{"up__secret"}})
 	if res.IsError {
 		t.Fatalf("disable: %v", text(res))
 	}
-	res = call("toolhost__call", map[string]any{"name": "up__secret", "arguments": map[string]any{}})
+	res = call("gateway__call", map[string]any{"name": "up__secret", "arguments": map[string]any{}})
 	if !res.IsError {
-		t.Fatal("disabled tool still callable via toolhost__call")
+		t.Fatal("disabled tool still callable via gateway__call")
 	}
 }
 
@@ -562,12 +565,14 @@ func TestStatelessEndToEnd(t *testing.T) {
 
 // Passthrough (federation): an upstream whose names arrive already
 // qualified keeps them — no re-namespacing; the inner gateway's
-// toolhost__* control plane is dropped; unqualified names are skipped.
+// gateway__* (or legacy toolhost__*) control plane is dropped;
+// unqualified names are skipped.
 func TestResolvePassthrough(t *testing.T) {
 	ups := []core.Upstream{
 		&stubPassthroughUpstream{stubUpstream{ns: "edge", tools: []*mcp.Tool{
 			{Name: "cbm__search_graph"}, // already qualified — passes through
-			{Name: "toolhost__search"},  // inner control plane — dropped
+			{Name: "gateway__discover"}, // inner control plane — dropped
+			{Name: "toolhost__search"},  // legacy inner control plane — dropped
 			{Name: "bare_name"},         // not qualified — skipped
 		}}},
 	}
@@ -581,8 +586,8 @@ func TestResolvePassthrough(t *testing.T) {
 	if res.Tools[0].Origin != "cbm__search_graph" {
 		t.Fatalf("origin must be the qualified name for dispatch, got %q", res.Tools[0].Origin)
 	}
-	if len(res.Skipped) != 2 {
-		t.Fatalf("want toolhost__search + bare_name skipped, got %+v", res.Skipped)
+	if len(res.Skipped) != 3 {
+		t.Fatalf("want gateway__* + toolhost__* + bare_name skipped, got %+v", res.Skipped)
 	}
 }
 
@@ -652,9 +657,9 @@ func TestCallTimeout(t *testing.T) {
 	})
 }
 
-// The agent's formal ask: toolhost__request queues unapproved names in the
-// config without widening the surface; a human approve answers (and
-// consumes) the request. Over the real wire.
+// The agent's formal ask: gateway__request queues unapproved names in the
+// env's state dir without widening the surface; a human approve answers
+// (and consumes) the request. Over the real wire.
 func TestRequestEndToEnd(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -726,13 +731,13 @@ func TestRequestEndToEnd(t *testing.T) {
 
 	// Requesting an already-approved tool is refused — the queue is for
 	// asks, not approvals-that-exist.
-	res := call("toolhost__request", map[string]any{"names": []string{"up__echo"}})
+	res := call("gateway__request", map[string]any{"names": []string{"up__echo"}})
 	if !res.IsError || !strings.Contains(text(res), "already approved") {
 		t.Fatalf("request approved tool: want refusal, got %v", text(res))
 	}
 
 	// The real ask lands in the config — and the tool stays uncallable.
-	res = call("toolhost__request", map[string]any{
+	res = call("gateway__request", map[string]any{
 		"names":  []string{"up__secret"},
 		"reason": "need it for the task",
 	})
@@ -759,7 +764,7 @@ func TestRequestEndToEnd(t *testing.T) {
 	}
 
 	// Same ask again → deduped, not doubled.
-	res = call("toolhost__request", map[string]any{"names": []string{"up__secret"}})
+	res = call("gateway__request", map[string]any{"names": []string{"up__secret"}})
 	if res.IsError || strings.Contains(text(res), `"up__secret",`) {
 		t.Fatalf("dedup: second request should add nothing, got %v", text(res))
 	}
@@ -767,11 +772,18 @@ func TestRequestEndToEnd(t *testing.T) {
 		t.Fatalf("dedup: want 1 pending request, got %+v", reqs)
 	}
 
-	// toolhost__status reports the pending ask to the human.
-	res = call("toolhost__status", map[string]any{})
-	if res.IsError {
-		t.Fatalf("status: %v", text(res))
+	// GET /status reports the pending ask to the human — the admin read
+	// that replaced the old status tool.
+	sreq, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/status", nil)
+	if err != nil {
+		t.Fatal(err)
 	}
+	sreq.Header.Set("Authorization", "Bearer test-token")
+	sresp, err := http.DefaultClient.Do(sreq)
+	if err != nil {
+		t.Fatalf("/status: %v", err)
+	}
+	defer sresp.Body.Close()
 	var report struct {
 		Mode      string                  `json:"mode"`
 		Approved  int                     `json:"approved"`
@@ -781,19 +793,32 @@ func TestRequestEndToEnd(t *testing.T) {
 			Tools int  `json:"tools"`
 		} `json:"backends"`
 	}
-	if err := json.Unmarshal([]byte(text(res)), &report); err != nil {
-		t.Fatalf("status payload: %v\n%s", err, text(res))
+	if err := json.NewDecoder(sresp.Body).Decode(&report); err != nil {
+		t.Fatalf("/status payload: %v", err)
 	}
 	if report.Approved != 1 || !report.Backends["up"].Up || report.Backends["up"].Tools != 3 {
-		t.Fatalf("status report wrong: %s", text(res))
+		t.Fatalf("status report wrong: %+v", report)
 	}
 	if len(report.Requested) != 1 || report.Requested[0].Name != "up__secret" {
-		t.Fatalf("status missing the pending request: %s", text(res))
+		t.Fatalf("status missing the pending request: %+v", report)
+	}
+	// And it's bearer-gated — unauthenticated asks are refused.
+	bad, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/status", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bresp, err := http.DefaultClient.Do(bad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bresp.Body.Close()
+	if bresp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("/status without bearer: want 401, got %s", bresp.Status)
 	}
 
 	// The human answers: approve consumes the request and the tool lands
 	// on the surface.
-	if err := app.EditApprovals(ctx, cfgPath, []string{"up__secret"}, true, io.Discard); err != nil {
+	if err := app.EditApprovals(ctx, cfgPath, []string{"up__secret"}, true, false, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	if reqs, _ := config.LoadRequests(cfgPath); len(reqs) != 0 {
@@ -836,7 +861,7 @@ func TestApprovePinsOnlyRequestedTool(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := app.EditApprovals(ctx, cfgPath, []string{"up__echo"}, true, io.Discard); err != nil {
+	if err := app.EditApprovals(ctx, cfgPath, []string{"up__echo"}, true, false, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	reloaded, err := config.Load(cfgPath)

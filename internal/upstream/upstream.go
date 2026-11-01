@@ -173,6 +173,9 @@ func transportFor(ctx context.Context, name string, cfg *config.Backend, opts *O
 		}
 		cmd := exec.Command(cfg.Command, cfg.Args...)
 		cmd.Env = stdioEnv(cfg)
+		if cfg.Cwd != "" {
+			cmd.Dir = cfg.Cwd
+		}
 		return &mcp.CommandTransport{Command: cmd}, nil
 
 	case "http", "streamable_http":

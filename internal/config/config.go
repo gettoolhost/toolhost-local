@@ -45,9 +45,18 @@ type Backend struct {
 
 	// Passthrough marks this upstream as a federated toolhost gateway: its
 	// tool names arrive already qualified ("cbm__search_graph") and are
-	// trusted as-is instead of being re-namespaced. Its own toolhost__*
+	// trusted as-is instead of being re-namespaced. Its own gateway__*
 	// meta-tools are dropped — the outer gateway has its own control plane.
 	Passthrough bool `json:"passthrough,omitempty"`
+
+	// Disabled parks the backend: the entry stays, nothing dials, and its
+	// tools leave the surface. `toolhost mcp enable` reconnects it. The
+	// tools' approvals stay pinned — parking is not revocation.
+	Disabled bool `json:"disabled,omitempty"`
+
+	// Cwd is the working directory a stdio backend spawns in — unset means
+	// inherit the gateway process's directory.
+	Cwd string `json:"cwd,omitempty"`
 
 	// CallTimeout overrides the top-level call_timeout for this backend —
 	// a Go duration ("30s", "2m"). A client-supplied tighter deadline still
@@ -124,12 +133,33 @@ type File struct {
 	AuditMaxMB int `json:"audit_max_mb,omitempty"`
 }
 
-// Request is one agent-filed approval request.
+// Request is one agent-filed petition. Kind "tool" asks approval for a
+// discovered qualified name; kind "server" proposes a whole new backend —
+// the human materializes it into config with `toolhost requests --accept`.
+// A denied petition stays on record so the agent sees the verdict rather
+// than re-asking blindly; a human clears it by re-requesting or accepting.
 type Request struct {
-	Name   string    `json:"name"`
+	Kind   string    `json:"kind"` // "tool" | "server"
+	Name   string    `json:"name"` // qualified tool name, or proposed backend name
 	Reason string    `json:"reason,omitempty"`
 	At     time.Time `json:"at"`
+
+	// server petitions — the proposed backend spec:
+	Transport string   `json:"transport,omitempty"` // "stdio" | "http"
+	URL       string   `json:"url,omitempty"`
+	Command   string   `json:"command,omitempty"`
+	Args      []string `json:"args,omitempty"`
+
+	// the human's verdict:
+	Denied     bool   `json:"denied,omitempty"`
+	DenyReason string `json:"deny_reason,omitempty"`
 }
+
+// Request kinds.
+const (
+	RequestTool   = "tool"
+	RequestServer = "server"
+)
 
 const (
 	DefaultListen   = "127.0.0.1:8080"
@@ -303,17 +333,22 @@ func SaveRequests(cfgPath string, reqs []Request) error {
 	return os.WriteFile(p, append(raw, '\n'), 0o600)
 }
 
-// AppendRequests queues qualified names (deduped, newest-last) in the
-// env's request file — what toolhost__request records. Approved names are
-// refused: the request is already answered.
+// AppendRequests queues qualified tool names (deduped, newest-last) in
+// the env's request file — what gateway__request records. Approved names
+// are refused: the request is already answered. A name a human denied is
+// refused too — denial is a verdict, not a speed bump.
 func AppendRequests(cfgPath string, approved map[string]bool, reason string, names ...string) ([]string, error) {
 	reqs, err := LoadRequests(cfgPath)
 	if err != nil {
 		return nil, err
 	}
 	have := make(map[string]bool, len(reqs))
+	denied := map[string]string{}
 	for _, r := range reqs {
 		have[r.Name] = true
+		if r.Denied {
+			denied[r.Name] = r.DenyReason
+		}
 	}
 	var added []string
 	for _, n := range names {
@@ -321,12 +356,18 @@ func AppendRequests(cfgPath string, approved map[string]bool, reason string, nam
 			return nil, fmt.Errorf("%q is not a qualified name (want backend__tool): %w", n, err)
 		}
 		if approved[n] {
-			return nil, fmt.Errorf("%q is already approved — enable it with toolhost__enable", n)
+			return nil, fmt.Errorf("%q is already approved — enable it with gateway__enable", n)
+		}
+		if why, wasDenied := denied[n]; wasDenied {
+			if why == "" {
+				why = "no reason given"
+			}
+			return nil, fmt.Errorf("%q was denied by the human — %s", n, why)
 		}
 		if have[n] {
 			continue
 		}
-		reqs = append(reqs, Request{Name: n, Reason: reason, At: time.Now().UTC()})
+		reqs = append(reqs, Request{Kind: RequestTool, Name: n, Reason: reason, At: time.Now().UTC()})
 		have[n] = true
 		added = append(added, n)
 	}
@@ -334,6 +375,98 @@ func AppendRequests(cfgPath string, approved map[string]bool, reason string, nam
 		return added, nil
 	}
 	return added, SaveRequests(cfgPath, reqs)
+}
+
+// AppendServerRequest queues a proposed backend — the agent supplies the
+// spec it can see (name, transport, url or command+args); the human
+// materializes it into config on --accept. Name collisions with existing
+// backends or denied proposals refuse.
+func AppendServerRequest(cfgPath string, f *File, r Request) error {
+	if err := f.validateBackend(r.Name, &Backend{
+		Transport: r.Transport, Command: r.Command, Args: r.Args, URL: r.URL,
+	}); err != nil {
+		return err
+	}
+	if _, exists := f.Backends[r.Name]; exists {
+		return fmt.Errorf("backend %q is already configured — its tools are discoverable, request tools on it instead", r.Name)
+	}
+	reqs, err := LoadRequests(cfgPath)
+	if err != nil {
+		return err
+	}
+	for _, q := range reqs {
+		if q.Name != r.Name || q.Kind != RequestServer {
+			continue
+		}
+		if q.Denied {
+			why := q.DenyReason
+			if why == "" {
+				why = "no reason given"
+			}
+			return fmt.Errorf("server %q was denied by the human — %s", r.Name, why)
+		}
+		return nil // already queued — a re-ask adds nothing
+	}
+	r.Kind = RequestServer
+	r.At = time.Now().UTC()
+	reqs = append(reqs, r)
+	return SaveRequests(cfgPath, reqs)
+}
+
+// DenyRequest marks one queued petition denied — the verdict stays on
+// record so the agent sees it rather than re-asking.
+func DenyRequest(cfgPath, name, reason string) error {
+	reqs, err := LoadRequests(cfgPath)
+	if err != nil {
+		return err
+	}
+	for i, r := range reqs {
+		if r.Name == name && !r.Denied {
+			reqs[i].Denied = true
+			reqs[i].DenyReason = reason
+			return SaveRequests(cfgPath, reqs)
+		}
+	}
+	return fmt.Errorf("no pending request %q", name)
+}
+
+// RemoveRequest drops a queue entry — the cleanup after --accept or an
+// explicit dismissal.
+func RemoveRequest(cfgPath, name string) error {
+	reqs, err := LoadRequests(cfgPath)
+	if err != nil {
+		return err
+	}
+	kept := reqs[:0]
+	for _, r := range reqs {
+		if r.Name != name {
+			kept = append(kept, r)
+		}
+	}
+	return SaveRequests(cfgPath, kept)
+}
+
+// PendingRequests filters the queue to undecided petitions.
+func PendingRequests(reqs []Request) []Request {
+	var out []Request
+	for _, r := range reqs {
+		if !r.Denied {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// DeniedSet is the lookup form — name → deny reason, for the catalog's
+// denied mark.
+func DeniedSet(reqs []Request) map[string]string {
+	set := map[string]string{}
+	for _, r := range reqs {
+		if r.Denied {
+			set[r.Name] = r.DenyReason
+		}
+	}
+	return set
 }
 
 // RemoveAnsweredRequests drops queue entries whose names are now approved
@@ -354,11 +487,13 @@ func RemoveAnsweredRequests(cfgPath string, approved map[string]bool) {
 	}
 }
 
-// RequestSet is the lookup form — name → pending request.
+// RequestSet is the lookup form — name → pending (undecided) request.
 func RequestSet(reqs []Request) map[string]bool {
 	set := make(map[string]bool, len(reqs))
 	for _, r := range reqs {
-		set[r.Name] = true
+		if !r.Denied {
+			set[r.Name] = true
+		}
 	}
 	return set
 }
@@ -471,42 +606,7 @@ func (f *File) validate() error {
 		return fmt.Errorf("audit_max_mb %d exceeds the 1 TiB cap", f.AuditMaxMB)
 	}
 	for name, b := range f.Backends {
-		if name == "toolhost" {
-			return fmt.Errorf("backend name %q is reserved for the gateway's own tools", name)
-		}
-		if err := namespace.ValidateNamespace(name); err != nil {
-			return fmt.Errorf("backend name %q: %w", name, err)
-		}
-		if b == nil {
-			return fmt.Errorf("backend %q: empty block", name)
-		}
-		if _, err := b.Resolved(); err != nil {
-			return fmt.Errorf("backend %q: %w", name, err)
-		}
-		switch b.Transport {
-		case "stdio":
-			if b.Command == "" {
-				return fmt.Errorf("backend %q: stdio transport requires command", name)
-			}
-		case "http", "streamable_http", "sse":
-			if b.URL == "" {
-				return fmt.Errorf("backend %q: %s transport requires url", name, b.Transport)
-			}
-		default:
-			return fmt.Errorf("backend %q: transport must be %q, %q or %q", name, "stdio", "http", "sse")
-		}
-		if b.Transport != "stdio" && (len(b.Env) > 0 || len(b.EnvAllowlist) > 0 || b.EnvInherit) {
-			return fmt.Errorf("backend %q: env, env_allowlist and env_inherit only apply to stdio transports", name)
-		}
-		if b.EnvInherit && len(b.EnvAllowlist) > 0 {
-			return fmt.Errorf("backend %q: env_inherit already passes every variable — env_allowlist is redundant", name)
-		}
-		if b.CallTimeout != "" {
-			if _, err := parseTimeout(b.CallTimeout); err != nil {
-				return fmt.Errorf("backend %q call_timeout: %w", name, err)
-			}
-		}
-		if err := b.validateAuth(name); err != nil {
+		if err := f.validateBackend(name, b); err != nil {
 			return err
 		}
 	}
@@ -531,6 +631,114 @@ func (f *File) validate() error {
 		}
 	}
 	return nil
+}
+
+// validateBackend checks one backend entry — the same rules f.validate
+// applies to the whole map, exported for single-entry writes like
+// `toolhost mcp add`.
+func (f *File) validateBackend(name string, b *Backend) error {
+	if name == "toolhost" || name == "gateway" {
+		return fmt.Errorf("backend name %q is reserved for the gateway's own control plane", name)
+	}
+	if err := namespace.ValidateNamespace(name); err != nil {
+		return fmt.Errorf("backend name %q: %w", name, err)
+	}
+	if b == nil {
+		return fmt.Errorf("backend %q: empty block", name)
+	}
+	if _, err := b.Resolved(); err != nil {
+		return fmt.Errorf("backend %q: %w", name, err)
+	}
+	switch b.Transport {
+	case "stdio":
+		if b.Command == "" {
+			return fmt.Errorf("backend %q: stdio transport requires command", name)
+		}
+	case "http", "streamable_http", "sse":
+		if b.URL == "" {
+			return fmt.Errorf("backend %q: %s transport requires url", name, b.Transport)
+		}
+	default:
+		return fmt.Errorf("backend %q: transport must be %q, %q or %q", name, "stdio", "http", "sse")
+	}
+	if b.Transport != "stdio" && (len(b.Env) > 0 || len(b.EnvAllowlist) > 0 || b.EnvInherit) {
+		return fmt.Errorf("backend %q: env, env_allowlist and env_inherit only apply to stdio transports", name)
+	}
+	if b.EnvInherit && len(b.EnvAllowlist) > 0 {
+		return fmt.Errorf("backend %q: env_inherit already passes every variable — env_allowlist is redundant", name)
+	}
+	if b.Cwd != "" && b.Transport != "stdio" {
+		return fmt.Errorf("backend %q: cwd only applies to stdio transports", name)
+	}
+	if b.CallTimeout != "" {
+		if _, err := parseTimeout(b.CallTimeout); err != nil {
+			return fmt.Errorf("backend %q call_timeout: %w", name, err)
+		}
+	}
+	return b.validateAuth(name)
+}
+
+// SetBackend inserts or replaces one backend after validation — the
+// `mcp add`/`requests --accept` write path. Callers Save afterwards.
+func (f *File) SetBackend(name string, b *Backend) error {
+	if err := f.validateBackend(name, b); err != nil {
+		return err
+	}
+	f.Backends[name] = b
+	return nil
+}
+
+// RemoveBackend drops a backend entry and reports whether anything
+// changed. Approval cleanup is the caller's decision — pruning policy
+// silently is how envelopes leak.
+func (f *File) RemoveBackend(name string) bool {
+	if _, ok := f.Backends[name]; !ok {
+		return false
+	}
+	delete(f.Backends, name)
+	return true
+}
+
+// BackendToolsApproved returns the approved qualified names belonging to
+// a backend's namespace — the cascade check `mcp remove` runs first.
+func (f *File) BackendToolsApproved(name string) []string {
+	var out []string
+	for _, q := range f.Approved {
+		if ns, _, err := namespace.Split(q); err == nil && ns == name {
+			out = append(out, q)
+		}
+	}
+	return out
+}
+
+// PruneBackendTools drops every approved/enabled name in a backend's
+// namespace — the explicit --prune-approvals form of mcp remove.
+func (f *File) PruneBackendTools(name string) []string {
+	var doomed []string
+	for _, q := range f.Approved {
+		if ns, _, err := namespace.Split(q); err == nil && ns == name {
+			doomed = append(doomed, q)
+		}
+	}
+	if f.Enabled != nil {
+		for _, q := range *f.Enabled {
+			if ns, _, err := namespace.Split(q); err == nil && ns == name {
+				doomed = append(doomed, q)
+			}
+		}
+	}
+	removed := f.Revoke(doomed...)
+	if f.Enabled != nil {
+		var kept []string
+		for _, q := range *f.Enabled {
+			if ns, _, err := namespace.Split(q); err != nil || ns != name {
+				kept = append(kept, q)
+			}
+		}
+		list := kept
+		f.Enabled = &list
+	}
+	return removed
 }
 
 // validateAuth enforces the auth block's shape. Auth is meaningless on

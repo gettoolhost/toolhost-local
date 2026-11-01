@@ -52,12 +52,14 @@ type Passthrough interface {
 
 // Qualify is the one name-mapping rule shared by Resolve and the meta
 // catalog: passthrough upstreams keep their (already qualified) names —
-// except the inner gateway's own toolhost__* control plane, which is
-// dropped; everything else is namespaced backend__tool.
+// except the inner gateway's own gateway__* (or legacy toolhost__*)
+// control plane, which is dropped; everything else is namespaced
+// backend__tool.
 func Qualify(up Upstream, name string) (string, error) {
 	if p, ok := up.(Passthrough); ok && p.Passthrough() {
-		if strings.HasPrefix(name, "toolhost"+namespace.Separator) {
-			return "", fmt.Errorf("toolhost__* is the inner gateway's control plane — not forwarded")
+		if strings.HasPrefix(name, "gateway"+namespace.Separator) ||
+			strings.HasPrefix(name, "toolhost"+namespace.Separator) {
+			return "", fmt.Errorf("%q is the inner gateway's control plane — not forwarded", name)
 		}
 		if _, _, err := namespace.Split(name); err != nil {
 			return "", fmt.Errorf("passthrough upstream tool %q is not a qualified name: %w", name, err)

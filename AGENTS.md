@@ -26,6 +26,11 @@ the separator without understanding why `::` was rejected.
 
 - `discovered != approved != enabled` — `core.Resolve` exposes only
   discovered, approved, enabled tools; absent `enabled` means all approved.
+- The agent control plane is exactly five verbs — `gateway__discover`,
+  `gateway__enable`, `gateway__disable`, `gateway__call`,
+  `gateway__request` — one per transition an agent can own. Live status
+  is `GET /status` (bearer-gated admin endpoint), audit stays file-side;
+  neither is a tool.
 - Gateway calls and agent governance actions leave JSONL audit records
   (`internal/audit`).
 - Ambiguity denies: bad names skip, collisions are hard errors, dead

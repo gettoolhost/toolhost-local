@@ -143,7 +143,8 @@ func TestResolveSkipsBadNames(t *testing.T) {
 func TestResolvePassthrough(t *testing.T) {
 	up := &stub{ns: "edge", passthrough: true, tools: []*mcp.Tool{
 		tool("cbm__search_graph"), // already qualified — trusted as-is
-		tool("toolhost__search"),  // inner control plane — dropped
+		tool("gateway__discover"), // inner control plane — dropped
+		tool("toolhost__search"),  // legacy inner control plane — dropped
 		tool("bare_name"),         // not qualified — skipped
 	}}
 	res, err := Resolve([]Upstream{up}, map[string]bool{
@@ -156,8 +157,8 @@ func TestResolvePassthrough(t *testing.T) {
 	if len(got) != 1 || got[0] != "cbm__search_graph" {
 		t.Fatalf("want [cbm__search_graph] trusted as-is, got %v", got)
 	}
-	if len(res.Skipped) != 2 {
-		t.Fatalf("want 2 skips (toolhost__* + bare name), got %+v", res.Skipped)
+	if len(res.Skipped) != 3 {
+		t.Fatalf("want 3 skips (gateway__* + toolhost__* + bare name), got %+v", res.Skipped)
 	}
 	// A federated name is approved under ITS own qualified form — the edge's
 	// namespace never appears.
@@ -234,8 +235,11 @@ func TestQualify(t *testing.T) {
 	if err != nil || q != "cbm__x" {
 		t.Fatalf("passthrough should trust qualified names, got %q err=%v", q, err)
 	}
+	if _, err = Qualify(passthrough, "gateway__status"); err == nil {
+		t.Fatal("inner gateway__* must never forward")
+	}
 	if _, err = Qualify(passthrough, "toolhost__status"); err == nil {
-		t.Fatal("inner toolhost__* must never forward")
+		t.Fatal("legacy toolhost__* must never forward")
 	}
 	if _, err = Qualify(passthrough, "unqualified"); err == nil {
 		t.Fatal("passthrough must reject unqualified names")

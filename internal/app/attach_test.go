@@ -566,7 +566,7 @@ func TestProvisionSkill(t *testing.T) {
 	if err != nil {
 		t.Fatalf("skill not written: %v", err)
 	}
-	if !strings.Contains(string(raw), skillMarker) || !strings.Contains(string(raw), "toolhost__enable") {
+	if !strings.Contains(string(raw), skillMarker) || !strings.Contains(string(raw), "gateway__enable") {
 		t.Fatal("skill doc missing marker or control-plane content")
 	}
 

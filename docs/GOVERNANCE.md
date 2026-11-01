@@ -10,9 +10,10 @@ The invariant: **`discovered ≠ approved ≠ enabled`**.
 
 - Only enabled tools appear in `tools/list` and dispatch.
 - Invisible tools are **structurally uncallable** — never registered, so
-  there is no check to bypass. `toolhost__call` on a non-enabled name
+  there is no check to bypass. `gateway__call` on a non-enabled name
   audits `tool_forbidden` and returns a precise reason (unknown /
-  discovered-not-approved / approved-but-disabled / schema-drifted).
+  discovered-not-approved / approved-but-disabled / schema-drifted /
+  backend-down / backend-parked).
 - `core.Resolve` is the only place visibility is decided.
 
 ## Schema pinning
@@ -30,20 +31,23 @@ written before 0.0.3 carry no pin and keep enforcing as before; a backend
 unreachable at approve time means the approval itself fails closed — you
 cannot approve a contract you cannot see.
 
-## The `toolhost__*` control plane
+## The `gateway__*` control plane
 
-Always registered, unaffected by reloads, reserved namespace:
+Always registered, unaffected by reloads, reserved namespace. Five verbs —
+one per transition an agent can legitimately own; pure introspection
+lives in the CLI instead:
 
 | tool | args | does |
 |---|---|---|
-| `toolhost__search` | `query` | catalog search by name/description; returns `{qualified, description, approved, enabled, requested}` |
-| `toolhost__list` | `scope`: `enabled`(default)/`approved`/`all` | the catalog filtered |
-| `toolhost__call` | `name`, `arguments` | dispatch an enabled tool by name — escape hatch for clients that ignore `tools/list_changed` |
-| `toolhost__enable` | `names[]` | approved → live now; refuses unapproved |
-| `toolhost__disable` | `names[]` | live → off now; stays approved |
-| `toolhost__request` | `names[]`, `reason` | queue an approval ask in the env's request file |
-| `toolhost__audit` | `limit?`, `kind?` | tail the audit log (newest last) — introspection without file access |
-| `toolhost__status` | — | mode, per-backend up/tools, approved/enabled counts, pending requests |
+| `gateway__discover` | `query?`, `scope?` | the catalog — search + list folded into one revelation verb; returns `{qualified, description, approved, enabled, requested, denied, drifted}`. scope: `all`(default)/`enabled`/`approved`/`discovered` |
+| `gateway__call` | `name`, `arguments` | dispatch an enabled tool by name — escape hatch for clients that ignore `tools/list_changed` |
+| `gateway__enable` | `names[]` | approved → live now; refuses unapproved |
+| `gateway__disable` | `names[]` | live → off now; stays approved |
+| `gateway__request` | `names[]?`, `servers[]?`, `reason` | petition a human — tool approvals, or whole proposed servers (`{name, transport, url\|command+args}` — topology only, never credentials) |
+
+What used to be agent-side introspection is now outside the tool surface:
+`toolhost status` reads `GET /status` (bearer-gated admin endpoint, not a
+tool) and `toolhost audit` reads the log file directly.
 
 Trust split: **agents govern `enabled`; humans govern `approved`.**
 `enable` refuses unapproved names. Agent-side writes go through the same
@@ -51,15 +55,21 @@ config file the CLI edits → same persistence, same watcher pickup.
 
 ## The request loop
 
-1. Agent hits a locked tool → `toolhost__request {names, reason}`.
-2. Request lands in `toolhost_requests.json` in the env's state dir
+1. Agent hits a locked tool → `gateway__request {names, reason}` — or
+   petitions a whole new server via `servers[]`.
+2. The petition lands in `toolhost_requests.json` in the env's state dir
    (deduped — never in `toolhost.json`, so a committed config stays
-   clean); `toolhost status` / `toolhost__status` surface it.
-3. Human runs `toolhost approve <name>` — or `toolhost approve
-   --requested` to drain the whole queue — and the entry is consumed.
-4. Agent then `toolhost__enable` or the human runs `toolhost enable`.
+   clean); `toolhost requests` and `toolhost status` surface it.
+3. The human answers: `toolhost requests --accept <name>` (a tool
+   petition becomes a schema-pinned approval; a server petition becomes
+   a backend entry in config) or `--deny <name> --reason …` (the verdict
+   stays on record — the agent sees `denied` in the next discover and
+   cannot re-ask). `toolhost approve --requested` still drains every
+   pending tool petition in one shot.
+4. Agent then `gateway__enable`s it, or the human runs `toolhost enable`.
 
-Requesting never approves. Agents cannot approve their own asks.
+Requesting never approves. Agents cannot approve their own asks, and
+cannot add servers — a server petition is a proposal, not an entry.
 
 ## Audit
 
@@ -77,10 +87,9 @@ Event: `{ts, kind, backend, tool, ms, err, remote}`.
 | `schema_drift` | an approved tool's live schema no longer matches its pin |
 | `reload` | config hot-swap; `err` set when a bad save was rejected |
 
-Humans query the file with any JSONL tool — e.g.
-`jq -c 'select(.kind=="tool_forbidden")'`. Agents read it through
-`toolhost__audit` (bounded tail, optional `kind` filter); the log never
-contains arguments or secrets, so exposing it is safe.
+Humans query it with `toolhost audit` or any JSONL tool — e.g.
+`jq -c 'select(.kind=="tool_forbidden")'`; the log never contains
+arguments or secrets.
 
 The log rotates at `audit_max_mb` (default 10): the live file swaps to
 `audit_log.1` and a fresh segment opens — at most ~2× the cap on disk,

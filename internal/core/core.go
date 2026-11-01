@@ -45,6 +45,22 @@ type ToolInfo struct {
 	// matches the schema hash recorded at approve time — the approval
 	// lapsed; re-approving pins the new schema.
 	Drifted bool `json:"drifted,omitempty"`
+	// Denied marks a petition a human refused — the agent sees the verdict
+	// rather than re-asking into a silent wall.
+	Denied       bool   `json:"denied,omitempty"`
+	DeniedReason string `json:"denied_reason,omitempty"`
+}
+
+// ServerSpec is an agent-proposed backend — the petition payload
+// gateway__request files for a human to materialize into config.
+// Topology only, never credentials: a proposal can't smuggle secrets
+// into the envelope.
+type ServerSpec struct {
+	Name      string   `json:"name"`
+	Transport string   `json:"transport"` // "stdio" | "http"
+	URL       string   `json:"url,omitempty"`
+	Command   string   `json:"command,omitempty"`
+	Args      []string `json:"args,omitempty"`
 }
 
 // Event is one governed action's evidence — the driven audit port.

@@ -23,8 +23,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
-
 	"github.com/gettoolhost/toolhost-local/internal/audit"
 	"github.com/gettoolhost/toolhost-local/internal/config"
 	"github.com/gettoolhost/toolhost-local/internal/core"
@@ -104,7 +102,7 @@ func initFile(path, token string, w io.Writer) error {
 	if err := f.Save(path); err != nil {
 		return err
 	}
-	fmt.Fprintf(w, "wrote %s\n\nnext: add a backend to \"backends\", then:\n  toolhost discover    # see every tool it exposes\n  toolhost approve fs__read_file\n  toolhost serve       # %s/mcp, Authorization: Bearer <token>\n", path, f.Listen)
+	fmt.Fprintf(w, "wrote %s\n\nnext:\n  toolhost mcp add fs -- npx -y @modelcontextprotocol/server-filesystem /tmp\n  toolhost discover    # see every tool it exposes\n  toolhost approve fs__read_file\n  toolhost serve       # %s/mcp, Authorization: Bearer <token>\n", path, f.Listen)
 	return nil
 }
 
@@ -118,8 +116,8 @@ func newToken() (string, error) {
 
 // Discover connects every backend and prints its tool inventory, marking
 // which qualified names are approved. Read-only: it writes nothing, audits
-// nothing.
-func Discover(ctx context.Context, path string, w io.Writer) error {
+// nothing. asJSON emits the catalog as structured data — the harness form.
+func Discover(ctx context.Context, path string, asJSON bool, w io.Writer) error {
 	f, err := config.Load(path)
 	if err != nil {
 		return err
@@ -138,12 +136,37 @@ func Discover(ctx context.Context, path string, w io.Writer) error {
 	for _, name := range sortedKeys(errs) {
 		fmt.Fprintf(w, "%-14s unreachable: %s\n", name, errs[name])
 	}
+	for name, b := range f.Backends {
+		if b.Disabled {
+			fmt.Fprintf(w, "%-14s parked — toolhost mcp enable %s to reconnect\n", name, name)
+		}
+	}
 	if len(names) == 0 && len(errs) == 0 {
 		fmt.Fprintln(w, "no backends configured — edit backends in "+path)
 		return nil
 	}
 
 	approved := f.ApprovedSet()
+	if asJSON {
+		var catalog []core.ToolInfo
+		for _, up := range ups {
+			for _, t := range up.Tools() {
+				qualified, err := core.Qualify(up, t.Name)
+				if err != nil {
+					continue
+				}
+				drifted := approved[qualified] && f.ApprovedSchemas[qualified] != "" &&
+					f.ApprovedSchemas[qualified] != core.SchemaHash(t)
+				catalog = append(catalog, core.ToolInfo{
+					Qualified: qualified, Description: t.Description,
+					Approved: approved[qualified],
+					Enabled:  approved[qualified] && !drifted && f.IsEnabled(qualified),
+					Drifted:  drifted,
+				})
+			}
+		}
+		return jsonOut(w, catalog)
+	}
 	for _, up := range ups {
 		for _, t := range up.Tools() {
 			qualified, err := core.Qualify(up, t.Name)
@@ -179,7 +202,7 @@ func Discover(ctx context.Context, path string, w io.Writer) error {
 // an upstream that silently changes a schema drops the tool off the
 // surface until re-approved. A name no backend currently exposes fails the
 // whole call (nothing half-approved).
-func EditApprovals(ctx context.Context, path string, names []string, approve bool, w io.Writer) error {
+func EditApprovals(ctx context.Context, path string, names []string, approve, dryRun bool, w io.Writer) error {
 	if len(names) == 0 {
 		return errors.New("name at least one qualified tool, e.g. toolhost approve fs__read_file")
 	}
@@ -203,6 +226,16 @@ func EditApprovals(ctx context.Context, path string, names []string, approve boo
 		fmt.Fprintln(w, "no change")
 		return nil
 	}
+	if dryRun {
+		verb := "approve"
+		if !approve {
+			verb = "revoke"
+		}
+		for _, n := range changed {
+			fmt.Fprintf(w, "would %s %s\n", verb, n)
+		}
+		return nil
+	}
 	if err := f.Save(path); err != nil {
 		return err
 	}
@@ -220,26 +253,33 @@ func EditApprovals(ctx context.Context, path string, names []string, approve boo
 	return nil
 }
 
-// ApproveRequested drains the agent's request queue: every name in
-// `requested` goes through the normal approve path — schema-pinned like
-// a hand-typed approval, and Approve consumes the queue entries. This is
-// the human's answer to toolhost__request; it approves exactly what was
-// asked, nothing more.
+// ApproveRequested drains the agent's tool-request queue: every pending
+// tool name goes through the normal approve path — schema-pinned like a
+// hand-typed approval. Server petitions are skipped — they answer through
+// `toolhost requests --accept`, which materializes the backend first.
 func ApproveRequested(ctx context.Context, path string, w io.Writer) error {
 	reqs, err := config.LoadRequests(path)
 	if err != nil {
 		return err
 	}
-	if len(reqs) == 0 {
-		fmt.Fprintln(w, "no pending agent requests")
-		return nil
-	}
-	names := make([]string, 0, len(reqs))
-	for _, r := range reqs {
+	var names []string
+	var servers int
+	for _, r := range config.PendingRequests(reqs) {
+		if r.Kind == config.RequestServer {
+			servers++
+			continue
+		}
 		names = append(names, r.Name)
 		fmt.Fprintf(w, "requested %s — %s\n", r.Name, r.Reason)
 	}
-	return EditApprovals(ctx, path, names, true, w)
+	if servers > 0 {
+		fmt.Fprintf(w, "(%d server petition(s) skipped — review: toolhost requests)\n", servers)
+	}
+	if len(names) == 0 {
+		fmt.Fprintln(w, "no pending agent requests")
+		return nil
+	}
+	return EditApprovals(ctx, path, names, true, false, w)
 }
 
 // auditLogPath resolves the audit log path the way serve does — a
@@ -467,11 +507,13 @@ func (t bearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	return http.DefaultTransport.RoundTrip(clone)
 }
 
-// Status reports gateway health. Live path: one tools/call to
-// toolhost__status over the real endpoint (works in both serving modes —
-// the SDK negotiates). If the gateway isn't running, it still prints what
-// the config knows: backends, counts, pending requests, stored grants.
-func Status(ctx context.Context, path string, w io.Writer) error {
+// Status reports gateway health. Live path: GET /status on the real
+// endpoint — an admin read, bearer-gated like /mcp but never part of
+// the agent's tool surface. If the gateway isn't running, it still
+// prints what the config knows: backends, counts, pending requests,
+// stored grants. asJSON emits the report (or config view) verbatim —
+// the form harnesses poll.
+func Status(ctx context.Context, path string, asJSON bool, w io.Writer) error {
 	f, err := config.Load(path)
 	if err != nil {
 		return err
@@ -481,35 +523,29 @@ func Status(ctx context.Context, path string, w io.Writer) error {
 	if err != nil {
 		// Tokenless env (e.g. a committed project config) — the live
 		// probe needs the bearer, so fall back to the config view.
-		printConfigStatus(f, path, w)
-		return nil
+		return printConfigStatus(f, path, asJSON, w)
 	}
-	client := mcp.NewClient(&mcp.Implementation{Name: "toolhost-cli", Version: core.Version}, nil)
-	connCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	session, err := client.Connect(connCtx, &mcp.StreamableClientTransport{
-		Endpoint:   "http://" + f.Listen + "/mcp",
-		HTTPClient: &http.Client{Transport: bearerTransport{token}},
-	}, nil)
-	cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+f.Listen+"/status", nil)
 	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	client := &http.Client{Timeout: 8 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		if asJSON {
+			return jsonOut(w, map[string]any{"up": false, "config": path})
+		}
 		fmt.Fprintf(w, "gateway: DOWN — %s/mcp not reachable\n\n", f.Listen)
-		printConfigStatus(f, path, w)
-		return nil
+		return printConfigStatus(f, path, asJSON, w)
 	}
-	defer session.Close()
-
-	callCtx, cancel2 := context.WithTimeout(ctx, 10*time.Second)
-	res, err := session.CallTool(callCtx, &mcp.CallToolParams{Name: "toolhost__status"})
-	cancel2()
-	if err != nil {
-		return fmt.Errorf("status call: %w", err)
-	}
-	if len(res.Content) == 0 {
-		return fmt.Errorf("status call: empty response")
-	}
-	text, ok := res.Content[0].(*mcp.TextContent)
-	if !ok {
-		return fmt.Errorf("status call: unexpected content")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		if asJSON {
+			return jsonOut(w, map[string]any{"up": false, "code": resp.StatusCode, "config": path})
+		}
+		fmt.Fprintf(w, "gateway: %s — /status answered %s\n\n", f.Listen, resp.Status)
+		return printConfigStatus(f, path, asJSON, w)
 	}
 	var report struct {
 		Mode      string `json:"mode"`
@@ -517,6 +553,7 @@ func Status(ctx context.Context, path string, w io.Writer) error {
 		Approved  int    `json:"approved"`
 		Enabled   int    `json:"enabled"`
 		Requested []struct {
+			Kind   string `json:"kind"`
 			Name   string `json:"name"`
 			Reason string `json:"reason"`
 		} `json:"requested"`
@@ -525,10 +562,14 @@ func Status(ctx context.Context, path string, w io.Writer) error {
 			Transport string `json:"transport"`
 			Tools     int    `json:"tools"`
 			Up        bool   `json:"up"`
+			Disabled  bool   `json:"disabled"`
 		} `json:"backends"`
 	}
-	if err := json.Unmarshal([]byte(text.Text), &report); err != nil {
-		return fmt.Errorf("status call: parse: %w", err)
+	if err := json.NewDecoder(resp.Body).Decode(&report); err != nil {
+		return fmt.Errorf("status: parse: %w", err)
+	}
+	if asJSON {
+		return jsonOut(w, report)
 	}
 
 	fmt.Fprintf(w, "gateway: UP — http://%s/mcp (%s mode)\n", report.Listen, report.Mode)
@@ -536,16 +577,24 @@ func Status(ctx context.Context, path string, w io.Writer) error {
 	for _, name := range sortedKeys(report.Backends) {
 		b := report.Backends[name]
 		state := "down"
-		if b.Up {
+		switch {
+		case b.Disabled:
+			state = "parked"
+		case b.Up:
 			state = "up"
 		}
 		fmt.Fprintf(w, "backend  %-12s %-6s %s, %d tools\n", name, state, b.Transport, b.Tools)
 	}
 	if len(report.Requested) > 0 {
-		fmt.Fprintln(w, "pending agent requests:")
+		fmt.Fprintln(w, "pending agent petitions:")
 		for _, r := range report.Requested {
-			fmt.Fprintf(w, "  %s — %s\n", r.Name, r.Reason)
+			kind := r.Kind
+			if kind == "" {
+				kind = "tool"
+			}
+			fmt.Fprintf(w, "  %s %s — %s\n", kind, r.Name, r.Reason)
 		}
+		fmt.Fprintln(w, "review: toolhost requests")
 	}
 	if len(report.Drifted) > 0 {
 		fmt.Fprintln(w, "schema drifted — re-approve to pin the new contract:")
@@ -557,13 +606,35 @@ func Status(ctx context.Context, path string, w io.Writer) error {
 }
 
 // printConfigStatus is the down-gateway view — everything knowable without
-// a live process: configured backends, gate counts, pending requests, and
+// a live process: configured backends, gate counts, pending petitions, and
 // which oauth backends hold stored grants.
-func printConfigStatus(f *config.File, path string, w io.Writer) {
+func printConfigStatus(f *config.File, path string, asJSON bool, w io.Writer) error {
+	if asJSON {
+		reqs, _ := config.LoadRequests(path)
+		en, has := f.EnabledSet()
+		view := map[string]any{
+			"up":        false,
+			"config":    path,
+			"mode":      f.Mode,
+			"approved":  len(f.ApprovedSet()),
+			"requested": config.PendingRequests(reqs),
+			"backends":  f.Backends,
+		}
+		if has {
+			view["enabled"] = len(en)
+		} else {
+			view["enabled"] = len(f.ApprovedSet())
+		}
+		return jsonOut(w, view)
+	}
 	fmt.Fprintf(w, "config:  %s (mode %s)\n", path, f.Mode)
 	for _, name := range sortedKeys(f.Backends) {
 		b := f.Backends[name]
-		fmt.Fprintf(w, "backend  %-12s configured  %s\n", name, b.Transport)
+		state := "configured"
+		if b.Disabled {
+			state = "parked"
+		}
+		fmt.Fprintf(w, "backend  %-12s %-11s %s\n", name, state, b.Transport)
 	}
 	en, has := f.EnabledSet()
 	if has {
@@ -572,8 +643,12 @@ func printConfigStatus(f *config.File, path string, w io.Writer) {
 		fmt.Fprintf(w, "tools:   %d approved (all enabled — no allowlist)\n", len(f.ApprovedSet()))
 	}
 	if reqs, err := config.LoadRequests(path); err == nil {
-		for _, r := range reqs {
-			fmt.Fprintf(w, "requested %s — %s\n", r.Name, r.Reason)
+		for _, r := range config.PendingRequests(reqs) {
+			kind := r.Kind
+			if kind == "" {
+				kind = "tool"
+			}
+			fmt.Fprintf(w, "requested %s %s — %s\n", kind, r.Name, r.Reason)
 		}
 	}
 	if store, err := oauth.OpenStore(oauth.StorePath(path)); err == nil {
@@ -582,11 +657,12 @@ func printConfigStatus(f *config.File, path string, w io.Writer) {
 				if store.Get(name) != nil {
 					fmt.Fprintf(w, "grant    %-12s stored\n", name)
 				} else {
-					fmt.Fprintf(w, "grant    %-12s MISSING — run: toolhost auth %s\n", name, name)
+					fmt.Fprintf(w, "grant    %-12s MISSING — run: toolhost mcp auth %s\n", name, name)
 				}
 			}
 		}
 	}
+	return nil
 }
 
 // Serve connects all configured backends, resolves the approved set, and
@@ -862,6 +938,12 @@ func (l *liveSet) reload() {
 			delete(l.ups, name)
 		}
 		delete(l.retry, name) // config changed — fresh backoff for the new shape
+		if cfg.Disabled {
+			// Parked: evicted above, never dialed. cfgs records the intent
+			// so a later enable flips it back into the dial set.
+			l.cfgs[name] = cfg
+			continue
+		}
 		toDial[name] = cfg
 		l.cfgs[name] = cfg // intent: the mid-dial commit check compares against this
 	}
@@ -1177,20 +1259,19 @@ func (l *liveSet) watchSession(name string, up core.Upstream) {
 }
 
 // meta exposes the liveSet as the gateway's own control plane — the
-// toolhost__* tools an agent calls to discover and govern its surface at
+// gateway__* tools an agent calls to discover and govern its surface at
 // runtime. Enable/Disable write through to the config file, so an agent's
 // choices persist exactly like the CLI's.
 func (l *liveSet) meta() *frontdoor.Meta {
 	return &frontdoor.Meta{
-		Search:  l.metaSearch,
-		List:    l.metaList,
-		Enable:  l.metaEnable,
-		Disable: l.metaDisable,
-		Request: l.metaRequest,
-		Status:  l.metaStatus,
-		Report:  l.metaReport,
-		Audit:   l.metaAudit,
-		CallErr: l.reportCallError,
+		Discover:     l.metaDiscover,
+		Enable:       l.metaEnable,
+		Disable:      l.metaDisable,
+		Request:      l.metaRequest,
+		Status:       l.metaStatus,
+		BackendState: l.metaBackendState,
+		Report:       l.metaReport,
+		CallErr:      l.reportCallError,
 	}
 }
 
@@ -1205,6 +1286,7 @@ func (l *liveSet) catalog() []core.ToolInfo {
 	enSet, hasEn := f.EnabledSet()
 	reqs, _ := config.LoadRequests(l.path)
 	requested := config.RequestSet(reqs)
+	denied := config.DeniedSet(reqs)
 	var out []core.ToolInfo
 	for _, ns := range sortedKeys(l.ups) {
 		for _, t := range l.ups[ns].Tools() {
@@ -1215,50 +1297,48 @@ func (l *liveSet) catalog() []core.ToolInfo {
 			pin := f.ApprovedSchemas[q]
 			drifted := approved[q] && pin != "" && pin != core.SchemaHash(t)
 			out = append(out, core.ToolInfo{
-				Qualified:   q,
-				Description: t.Description,
-				Approved:    approved[q],
-				Enabled:     approved[q] && !drifted && (!hasEn || enSet[q]),
-				Requested:   requested[q],
-				Drifted:     drifted,
+				Qualified:    q,
+				Description:  t.Description,
+				Approved:     approved[q],
+				Enabled:      approved[q] && !drifted && (!hasEn || enSet[q]),
+				Requested:    requested[q],
+				Drifted:      drifted,
+				Denied:       denied[q] != "",
+				DeniedReason: denied[q],
 			})
 		}
 	}
 	return out
 }
 
-func (l *liveSet) metaSearch(_ context.Context, query string) ([]core.ToolInfo, error) {
+// metaDiscover is the agent's one revelation verb — query matches names
+// and descriptions, scope narrows the result to a governance tier.
+func (l *liveSet) metaDiscover(_ context.Context, query, scope string) ([]core.ToolInfo, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	query = strings.ToLower(query)
-	var hits []core.ToolInfo
-	for _, info := range l.catalog() {
-		if query == "" || strings.Contains(strings.ToLower(info.Qualified), query) ||
-			strings.Contains(strings.ToLower(info.Description), query) {
-			hits = append(hits, info)
-		}
-	}
-	return hits, nil
-}
-
-func (l *liveSet) metaList(_ context.Context, scope string) ([]core.ToolInfo, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
 	var out []core.ToolInfo
 	for _, info := range l.catalog() {
 		switch scope {
-		case "", "enabled":
-			if info.Enabled {
-				out = append(out, info)
+		case "", "all":
+		case "enabled":
+			if !info.Enabled {
+				continue
 			}
 		case "approved":
-			if info.Approved {
-				out = append(out, info)
+			if !info.Approved {
+				continue
 			}
-		case "all":
-			out = append(out, info)
+		case "discovered":
+			if info.Approved {
+				continue
+			}
 		default:
-			return nil, fmt.Errorf("scope must be \"enabled\", \"approved\" or \"all\", got %q", scope)
+			return nil, fmt.Errorf("scope must be \"all\", \"enabled\", \"approved\" or \"discovered\", got %q", scope)
+		}
+		if query == "" || strings.Contains(strings.ToLower(info.Qualified), query) ||
+			strings.Contains(strings.ToLower(info.Description), query) {
+			out = append(out, info)
 		}
 	}
 	return out, nil
@@ -1311,27 +1391,61 @@ func (l *liveSet) metaDisable(ctx context.Context, names []string) ([]string, er
 	return changed, nil
 }
 
-// metaRequest is the agent's formal ask: queue qualified names in the
-// env's state-dir request file — the config itself is never touched, so
-// a committed toolhost.json stays a pure declaration. A request never
-// widens the surface; only a human `toolhost approve` does.
-func (l *liveSet) metaRequest(_ context.Context, names []string, reason string) ([]string, error) {
+// metaRequest is the agent's formal ask: queue qualified tool names or
+// proposed servers in the env's state-dir request file — the config
+// itself is never touched, so a committed toolhost.json stays a pure
+// declaration. A request never widens anything; only a human answers.
+func (l *liveSet) metaRequest(_ context.Context, names []string, servers []core.ServerSpec, reason string) ([]string, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	f, err := config.Load(l.path)
 	if err != nil {
 		return nil, err
 	}
-	queued, err := config.AppendRequests(l.path, f.ApprovedSet(), reason, names...)
-	if err != nil {
-		return nil, err
+	var queued []string
+	if len(names) > 0 {
+		q, err := config.AppendRequests(l.path, f.ApprovedSet(), reason, names...)
+		if err != nil {
+			return nil, err
+		}
+		queued = append(queued, q...)
 	}
-	l.sink.Record(core.Event{TS: time.Now(), Kind: core.EventGovern, Tool: "request:" + strings.Join(names, ",")})
+	for _, sp := range servers {
+		err := config.AppendServerRequest(l.path, f, config.Request{
+			Name: sp.Name, Transport: sp.Transport, URL: sp.URL,
+			Command: sp.Command, Args: sp.Args, Reason: reason,
+		})
+		if err != nil {
+			return nil, err
+		}
+		queued = append(queued, sp.Name)
+	}
+	l.sink.Record(core.Event{TS: time.Now(), Kind: core.EventGovern, Tool: "request:" + strings.Join(queued, ",")})
 	return queued, nil
 }
 
+// metaBackendState reports a namespace's liveness for refusal precision —
+// a configured-but-dead backend's tools are absent from the catalog, so
+// "unknown tool" would be a lie; "down — reconnecting" is the truth.
+// Callers hold no lock; it takes its own.
+func (l *liveSet) metaBackendState(ns string) string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	cfg, ok := l.cfgs[ns]
+	if !ok {
+		return ""
+	}
+	if cfg.Disabled {
+		return "disabled"
+	}
+	if _, live := l.ups[ns]; live {
+		return "up"
+	}
+	return "down"
+}
+
 // metaReport is the gateway's live health — the data `toolhost status`
-// prints and toolhost__status returns. Callers hold no lock here; it takes
+// prints and GET /status serves. Callers hold no lock here; it takes
 // its own.
 func (l *liveSet) metaReport() any {
 	l.mu.Lock()
@@ -1341,10 +1455,11 @@ func (l *liveSet) metaReport() any {
 		Transport string `json:"transport"`
 		Tools     int    `json:"tools"`
 		Up        bool   `json:"up"`
+		Disabled  bool   `json:"disabled,omitempty"`
 	}
 	backends := map[string]backendState{}
 	for name, cfg := range l.cfgs {
-		b := backendState{Transport: cfg.Transport}
+		b := backendState{Transport: cfg.Transport, Disabled: cfg.Disabled}
 		if up, ok := l.ups[name]; ok {
 			b.Up = true
 			b.Tools = len(up.Tools())
@@ -1352,6 +1467,7 @@ func (l *liveSet) metaReport() any {
 		backends[name] = b
 	}
 	reqs, _ := config.LoadRequests(l.path)
+	reqs = config.PendingRequests(reqs)
 	var approved, enabled int
 	var drifted []string
 	for _, info := range l.catalog() {
@@ -1385,16 +1501,6 @@ func (l *liveSet) metaStatus(name string) (core.ToolInfo, bool) {
 		}
 	}
 	return core.ToolInfo{}, false
-}
-
-// metaAudit is the agent-facing read on the evidence trail: the last `limit`
-// events, optionally one kind. Agents get introspection without file access;
-// the log never carried arguments or secrets, so it is safe to expose.
-func (l *liveSet) metaAudit(_ context.Context, limit int, kind string) ([]core.Event, error) {
-	if limit <= 0 || limit > 500 {
-		limit = 50
-	}
-	return auditTail(l.auditLog, limit, kind)
 }
 
 // auditTail returns the last `limit` events from a JSONL audit log in
@@ -1470,9 +1576,11 @@ func tailLines(path string) ([]string, error) {
 	return lines, sc.Err()
 }
 
-// ConnectBackends dials every configured backend. Failures are per-backend:
-// the gateway keeps serving the rest, and the failure is evidenced — a dead
-// backend's tools are absent, hence uncallable, which IS the closed posture.
+// ConnectBackends dials every configured, enabled backend. Failures are
+// per-backend: the gateway keeps serving the rest, and the failure is
+// evidenced — a dead backend's tools are absent, hence uncallable, which
+// IS the closed posture. Disabled backends are never dialed — parked is
+// a state, not an error.
 func ConnectBackends(ctx context.Context, f *config.File, tokens *oauth.Store, sink core.AuditSink, log *slog.Logger) ([]core.Upstream, map[string]error) {
 	if log == nil {
 		log = slog.Default()
@@ -1481,6 +1589,9 @@ func ConnectBackends(ctx context.Context, f *config.File, tokens *oauth.Store, s
 	errs := map[string]error{}
 	opts := &upstream.Options{Tokens: tokens, Out: io.Discard, DefaultCallTimeout: callTimeout(f)}
 	for _, name := range sortedKeys(f.Backends) {
+		if f.Backends[name].Disabled {
+			continue
+		}
 		connectCtx, cancel := context.WithTimeout(ctx, connectTimeout)
 		up, err := upstream.Connect(connectCtx, name, f.Backends[name], opts)
 		cancel()

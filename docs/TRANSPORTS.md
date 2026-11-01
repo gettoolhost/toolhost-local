@@ -43,7 +43,8 @@ gateway as a backend with `"passthrough": true`:
 
 - Inner qualified names pass through unchanged: `cbm__search_graph`
   stays `cbm__search_graph` at any depth.
-- The inner gateway's `toolhost__*` meta-tools are dropped at the edge —
-  the outer gateway has its own control plane.
+- The inner gateway's `gateway__*` meta-tools are dropped at the edge —
+  the outer gateway has its own control plane. Legacy `toolhost__*`
+  inner gateways are dropped too.
 - Governance composes: the outer `approved` list still gates which
   federated tools go live.

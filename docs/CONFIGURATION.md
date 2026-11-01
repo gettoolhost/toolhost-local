@@ -28,10 +28,14 @@ home, keyed under `projects/` outside it.
 (including `[]`) = only `enabled ∩ approved` is live. Never write it by
 hand unless you mean it — `toolhost enable/disable` manages it.
 
-Agent-filed requests are runtime state, not config: they live in
-`toolhost_requests.json` in the state dir as `{ "name", "reason", "at" }`
-entries deduped by name — written by `toolhost__request`, consumed by
-`approve`.
+Agent-filed petitions are runtime state, not config: they live in
+`toolhost_requests.json` in the state dir as `{ "kind", "name", "reason",
+"at" }` entries deduped by name — `kind:"tool"` is an approval ask,
+`kind:"server"` carries a proposed backend spec (`transport`, `url` or
+`command`/`args`). Written by `gateway__request`, answered by
+`toolhost requests --accept/--deny` or `approve --requested`; a denied
+entry stays on record (`denied`, `deny_reason`) so the agent sees the
+verdict.
 
 ## Backend
 
@@ -44,11 +48,14 @@ entries deduped by name — written by `toolhost__request`, consumed by
 | `url` | http, sse | MCP endpoint |
 | `headers` | http, sse | static headers; values may be `env:` refs |
 | `auth` | http, sse | upstream auth — see AUTHENTICATION.md. Invalid on stdio |
-| `passthrough` | http, sse | upstream is a federated gateway — trust qualified names, drop its `toolhost__*` |
+| `passthrough` | http, sse | upstream is a federated gateway — trust qualified names, drop its `gateway__*` (and legacy `toolhost__*`) |
+| `disabled` | all | parked — entry kept, never dialed, tools off the surface (`mcp disable/enable`) |
+| `cwd` | stdio | subprocess working directory |
 | `call_timeout` | all | per-backend override of the global |
 
-Backend names: `^[a-zA-Z0-9_-]+$` and not `toolhost` (reserved for the
-meta-plane). Names are the namespace — rename = re-approval.
+Backend names: `^[a-zA-Z0-9_-]+$` and not `gateway` or `toolhost`
+(reserved for the meta-plane). Names are the namespace — rename =
+re-approval.
 
 ## `env:` references
 

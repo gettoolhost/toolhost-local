@@ -37,14 +37,14 @@ flowchart LR
   enable --> resolve
   discover --> resolve
   resolve --> surface["Visible and callable"]
-  meta["toolhost__*<br/>agent control"] --> config["toolhost.json<br/>enabled"] & state["toolhost_requests.json<br/>requests"]
+  meta["gateway__*<br/>agent control"] --> config["toolhost.json<br/>enabled"] & state["toolhost_requests.json<br/>requests"]
   human["toolhost approve<br/>human CLI"] --> config
   config --> approve
   config --> enable
   config --> reload["Reload"] --> surface
 ```
 
-- `toolhost__search`, `list`, `status`, and `audit` read state; `request`, `enable`, and `disable` write config; `call` dispatches through the live set.
+- `gateway__discover` reads the catalog; `enable` and `disable` write config; `request` files petitions (tools or proposed servers); `call` dispatches through the live set. Live status is `GET /status`, an admin endpoint, not a tool.
 - An absent `enabled` list exposes every approved tool. An explicit empty list exposes none. `Reload` updates the resolved surface; modern subscribers and legacy stateful sessions receive `tools/list_changed`.
 
 ## Governed call
@@ -80,7 +80,7 @@ flowchart LR
 - **File-backed policy:** `approved` and `enabled` live in `toolhost.json` (governance decisions); `requested` lives in `toolhost_requests.json` in the env's state dir (runtime data — a committed config stays clean). Atomic saves and a ~1.5s watcher let `Reload` swap the live surface without a database.
 - **Stateless default:** independent Streamable HTTP requests need no `Mcp-Session-Id`; 2026-07-28 clients can subscribe to list changes, while stateful mode serves older clients that need held sessions.
 - **Context boundary:** only deadline and cancellation cross into upstream calls; downstream protocol-version values could break a legacy upstream.
-- **Persistent meta-tools:** the eight `toolhost__*` tools sit outside the resolved set, so reload cannot remove the agent control plane.
+- **Persistent meta-tools:** the five `gateway__*` verbs sit outside the resolved set, so reload cannot remove the agent control plane.
 - **Bounded calls:** `call_timeout` defaults to `60s`, permits a per-backend override, and never widens a caller's earlier deadline.
 - **Stdio front door:** `serve --stdio` reuses the governed surface for spawn-only clients; the owning process replaces bearer authentication.
 - **User service:** `install` uses launchd or systemd user units; it needs neither root nor a separate daemon.
