@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="t d">
+  <title id="t">local-gateway mark</title>
+  <desc id="d">A gateway arch: three upstream tools converge through the door into one governed path.</desc>
+  <!-- the fix that matters: beams converge THROUGH the doorway into
+       a single governed beam — nothing dead-ends at the jamb -->
+  <g fill="none" stroke="#26221B" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M48 100 V44 A16 16 0 0 1 80 44 V100"/>
+    <path d="M36 100 H92"/>
+  </g>
+  <g fill="none" stroke="#D97757" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M18 46 Q 44 48 64 68" stroke-width="3.5" opacity="0.85"/>
+    <path d="M14 68 L 64 68" stroke-width="3.5" opacity="0.85"/>
+    <path d="M18 90 Q 44 88 64 68" stroke-width="3.5" opacity="0.85"/>
+    <path d="M64 68 L 108 68" stroke-width="4.5"/>
+  </g>
+  <g fill="#D97757">
+    <circle cx="18" cy="46" r="5.5"/>
+    <circle cx="14" cy="68" r="5.5"/>
+    <circle cx="18" cy="90" r="5.5"/>
+    <circle cx="108" cy="68" r="7.5"/>
+  </g>
+</svg>

@@ -1,85 +1,167 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-labelledby="title desc">
-  <title id="title">Toolhost — one front door, only approved tools</title>
-  <desc id="desc">An MCP gateway admits approved tool connections and records calls in an audit log.</desc>
+  <title id="title">toolhost — Local MCP Gateway</title>
+  <desc id="desc">Upstream MCP servers connect to toolhost, where discovered tools pass a human-only approve boundary to become schema-pinned, and the agent enables and calls only what it needs. All calls audit to append-only JSONL.</desc>
+
   <defs>
-    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#0b1420"/>
-      <stop offset="1" stop-color="#142333"/>
-    </linearGradient>
-    <linearGradient id="gate" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#ffb085"/>
-      <stop offset=".55" stop-color="#f27d4b"/>
-      <stop offset="1" stop-color="#ad4e32"/>
-    </linearGradient>
-    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
-      <path d="M40 0H0V40" fill="none" stroke="#8db1bb" stroke-opacity=".07"/>
-    </pattern>
-    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
-      <feGaussianBlur stdDeviation="12"/>
-    </filter>
+    <marker id="ah-neutral" viewBox="0 0 10 8" refX="8" refY="4" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 .6 L8.6 4 L0 7.4" fill="none" stroke="#8A897B" stroke-width="1.6"/>
+    </marker>
+    <marker id="ah-clay" viewBox="0 0 10 8" refX="8" refY="4" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 .6 L8.6 4 L0 7.4" fill="none" stroke="#D97757" stroke-width="1.8"/>
+    </marker>
   </defs>
 
-  <rect width="1280" height="640" fill="url(#background)"/>
-  <rect width="1280" height="640" fill="url(#grid)"/>
-  <path d="M0 558H1280" stroke="#9dc5c2" stroke-opacity=".18"/>
+  <rect width="1280" height="640" fill="#E9E8DE"/>
+  <rect x="28" y="24" width="1224" height="592" rx="18" fill="#FBFBF7" stroke="#DCDACC" stroke-width="1"/>
 
-  <g font-family="Arial, Helvetica, sans-serif">
-    <g transform="translate(70 62)" fill="none" stroke="#f27d4b" stroke-width="3" stroke-linecap="round">
-      <path d="M0 5H17L25 13H37"/>
-      <path d="M0 13H37"/>
-      <path d="M0 21H17L25 13"/>
-      <circle cx="40" cy="13" r="3" fill="#f27d4b" stroke="none"/>
+  <g font-family="ui-sans-serif,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif">
+    <!-- Header -->
+    <text x="60" y="68" fill="#B85C3E" font-size="12" letter-spacing="4" font-weight="700">TOOLHOST</text>
+    <text x="160" y="68" fill="#8A897B" font-size="12" letter-spacing="1.5">LOCAL MCP GATEWAY</text>
+    <text x="60" y="102" fill="#26221B" font-size="24" font-weight="700" letter-spacing="-.3">Every server behind one door — only the tools you approve on it</text>
+    <text x="1220" y="68" fill="#8A897B" font-size="12" text-anchor="end" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">single binary · zero database · JSONL audit</text>
+
+    <!-- Upstream Servers -->
+    <rect x="60" y="132" width="220" height="376" rx="14" fill="#F3F2EA" stroke="#E2E0D4" stroke-width="1"/>
+    <text x="78" y="160" fill="#6E6D62" font-size="11" font-weight="700" letter-spacing="1.2">UPSTREAM SERVERS</text>
+    <text x="78" y="176" fill="#8A897B" font-size="10.5">stdio · sse · streamable http</text>
+
+    <g>
+      <rect x="76" y="194" width="188" height="52" rx="9" fill="#FDFDFB" stroke="#C9C7B8" stroke-width="1.2"/>
+      <text x="90" y="217" fill="#26221B" font-weight="600" font-size="13">fs</text>
+      <text x="90" y="234" fill="#8A897B" font-size="10.5" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">stdio · npx</text>
+      <circle cx="248" cy="220" r="4" fill="#6E6D62"/>
     </g>
-    <text x="125" y="84" fill="#f1eee7" font-size="21" font-weight="700" letter-spacing="4">TOOLHOST</text>
-    <text x="70" y="217" fill="#f1eee7" font-size="56" font-weight="700" letter-spacing="-2">One front door.</text>
-    <text x="70" y="282" fill="#f27d4b" font-size="54" font-weight="700" letter-spacing="-2">Only approved tools.</text>
-    <text x="72" y="338" fill="#b7c7ca" font-size="20">The local-first MCP gateway for AI agents.</text>
-    <text x="72" y="375" fill="#b7c7ca" font-size="20">Discover. Approve. Enable. Audit.</text>
-    <rect x="70" y="430" width="445" height="54" rx="8" fill="#172d39" stroke="#4e7580" stroke-opacity=".7"/>
-    <text x="92" y="465" fill="#d9e4df" font-size="17" font-weight="700" letter-spacing="1">DISCOVERED  ≠  APPROVED  ≠  ENABLED</text>
-    <text x="70" y="598" fill="#86a7aa" font-size="15" letter-spacing="1">ONE /mcp ENDPOINT  •  HUMAN APPROVAL  •  JSONL AUDIT</text>
-  </g>
+    <g>
+      <rect x="76" y="256" width="188" height="52" rx="9" fill="#FDFDFB" stroke="#C9C7B8" stroke-width="1.2"/>
+      <text x="90" y="279" fill="#26221B" font-weight="600" font-size="13">github</text>
+      <text x="90" y="296" fill="#8A897B" font-size="10.5" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">http · env:GH_TOKEN</text>
+      <circle cx="248" cy="282" r="4" fill="#6E6D62"/>
+    </g>
+    <g>
+      <rect x="76" y="318" width="188" height="52" rx="9" fill="#FDFDFB" stroke="#C9C7B8" stroke-width="1.2"/>
+      <text x="90" y="341" fill="#26221B" font-weight="600" font-size="13">linear</text>
+      <text x="90" y="358" fill="#8A897B" font-size="10.5" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">http · oauth</text>
+      <circle cx="248" cy="344" r="4" fill="#6E6D62"/>
+    </g>
+    <g>
+      <rect x="76" y="380" width="188" height="52" rx="9" fill="none" stroke="#A8A79B" stroke-width="1.2" stroke-dasharray="4 4"/>
+      <text x="90" y="402" fill="#55554B" font-weight="600" font-size="12">imported entries</text>
+      <text x="90" y="420" fill="#8A897B" font-size="10" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">mcp import claude · cursor</text>
+      <circle cx="248" cy="406" r="3.5" fill="#8A897B"/>
+    </g>
+    <g font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10.5">
+      <rect x="76" y="450" width="188" height="28" rx="6" fill="#EAE8DD"/>
+      <text x="170" y="468" fill="#55554B" text-anchor="middle">toolhost mcp add</text>
+    </g>
 
-  <g fill="#1b3440" stroke="#537885" stroke-width="1.5">
-    <rect x="640" y="123" width="104" height="38" rx="7"/>
-    <rect x="640" y="193" width="104" height="38" rx="7"/>
-    <rect x="640" y="263" width="104" height="38" rx="7"/>
-    <rect x="640" y="333" width="104" height="38" rx="7"/>
-    <rect x="640" y="403" width="104" height="38" rx="7"/>
-  </g>
-  <g fill="#a9c5c4" font-family="Arial, Helvetica, sans-serif" font-size="13" text-anchor="middle" letter-spacing="1">
-    <text x="692" y="148">SERVER A</text>
-    <text x="692" y="218">SERVER B</text>
-    <text x="692" y="288">SERVER C</text>
-    <text x="692" y="358">SERVER D</text>
-    <text x="692" y="428">SERVER E</text>
-  </g>
+    <!-- Fan-in lines into gateway — straight diagonals, no curves -->
+    <g fill="none" stroke="#8A897B" stroke-width="1.4">
+      <path d="M264 220 L 332 258" marker-end="url(#ah-neutral)"/>
+      <path d="M264 282 L 332 272" marker-end="url(#ah-neutral)"/>
+      <path d="M264 344 L 332 288" marker-end="url(#ah-neutral)"/>
+      <path d="M264 406 L 332 304" stroke-dasharray="4 4" marker-end="url(#ah-neutral)"/>
+    </g>
 
-  <g fill="none" stroke-width="2.5" stroke-linecap="round">
-    <path d="M744 142C815 142 827 230 905 230" stroke="#86a7aa" stroke-opacity=".45"/>
-    <path d="M744 212C812 212 838 267 905 267" stroke="#e6dfd0"/>
-    <path d="M744 282H905" stroke="#e6dfd0"/>
-    <path d="M744 352C812 352 838 297 905 297" stroke="#e6dfd0"/>
-    <path d="M744 422C815 422 827 320 905 320" stroke="#86a7aa" stroke-opacity=".45"/>
-    <path d="M955 267H1115" stroke="#e6dfd0"/>
-    <path d="M955 282H1115" stroke="#e6dfd0"/>
-    <path d="M955 297H1115" stroke="#e6dfd0"/>
-    <path d="M955 297C1000 348 1032 438 1070 455" stroke="#85dccb" stroke-dasharray="3 9"/>
-  </g>
-  <circle cx="930" cy="282" r="45" fill="#f27d4b" opacity=".25" filter="url(#glow)"/>
-  <circle cx="930" cy="282" r="47" fill="#182a36" stroke="url(#gate)" stroke-width="16"/>
-  <circle cx="930" cy="282" r="28" fill="#10202d" stroke="#ffb085" stroke-opacity=".8"/>
-  <circle cx="1140" cy="282" r="24" fill="#1b3440" stroke="#85dccb" stroke-width="3"/>
-  <circle cx="1140" cy="282" r="8" fill="#85dccb"/>
-  <g font-family="Arial, Helvetica, sans-serif" text-anchor="middle">
-    <text x="1140" y="336" fill="#bdd5d2" font-size="15" letter-spacing="2">AGENT</text>
-    <text x="930" y="361" fill="#ffae82" font-size="15" letter-spacing="2">GATE</text>
-  </g>
+    <!-- Gateway Core Card -->
+    <rect x="340" y="132" width="560" height="376" rx="14" fill="#FAFBF8" stroke="#8A897B" stroke-width="1.4"/>
+    <text x="364" y="162" fill="#26221B" font-size="16" font-weight="700">local-gateway</text>
+    <text x="478" y="162" fill="#8A897B" font-size="11" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">127.0.0.1:8080/mcp · bearer</text>
+    <text x="880" y="162" fill="#8A897B" font-size="11" text-anchor="end">the governed funnel</text>
 
-  <g transform="translate(1020 456)">
-    <rect width="140" height="74" rx="9" fill="#1b3440" stroke="#85dccb" stroke-opacity=".65"/>
-    <path d="M22 24H83M22 37H101M22 50H71" stroke="#b6ded6" stroke-width="3" stroke-linecap="round"/>
-    <circle cx="111" cy="51" r="5" fill="#85dccb"/>
-    <text x="70" y="95" fill="#a4c5c4" font-family="Arial, Helvetica, sans-serif" font-size="14" text-anchor="middle" letter-spacing="2">AUDIT</text>
+    <!-- Tier 1: Discovered -->
+    <rect x="358" y="184" width="144" height="226" rx="10" fill="#F1F1E9" stroke="#DDDBCF" stroke-width="1"/>
+    <text x="370" y="206" fill="#55554B" font-size="11.5" font-weight="700">1. DISCOVERED</text>
+    <text x="370" y="222" fill="#8A897B" font-size="10">14 tools in catalog</text>
+    <g font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="9.5">
+      <rect x="368" y="234" width="124" height="22" rx="4" fill="#FDFDFB" stroke="#D2D0C2"/><text x="376" y="249" fill="#55554B">fs__read_file</text>
+      <rect x="368" y="260" width="124" height="22" rx="4" fill="#FDFDFB" stroke="#D2D0C2"/><text x="376" y="275" fill="#55554B">fs__write_file</text>
+      <rect x="368" y="286" width="124" height="22" rx="4" fill="#FDFDFB" stroke="#D2D0C2"/><text x="376" y="301" fill="#55554B">fs__list_dir</text>
+      <rect x="368" y="312" width="124" height="22" rx="4" fill="#FDFDFB" stroke="#D2D0C2"/><text x="376" y="327" fill="#55554B">gh__search</text>
+      <rect x="368" y="338" width="124" height="22" rx="4" fill="#FDFDFB" stroke="#D2D0C2"/><text x="376" y="353" fill="#8A897B">+ 10 unapproved</text>
+    </g>
+    <text x="430" y="394" fill="#8A897B" font-size="9.5" text-anchor="middle">visible but uncallable</text>
+
+    <!-- Boundary: Human Approves -->
+    <path d="M518 184 V 410" stroke="#D97757" stroke-width="1.8" stroke-dasharray="5 4"/>
+    <g transform="translate(518, 204)">
+      <rect x="-42" y="-12" width="84" height="20" rx="10" fill="#D97757"/>
+      <text x="0" y="2" fill="#FBFBF7" font-size="9" font-weight="700" text-anchor="middle" letter-spacing="1">APPROVE</text>
+    </g>
+    <text x="518" y="422" fill="#B85C3E" font-size="9.5" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">human only</text>
+
+    <!-- Tier 2: Approved -->
+    <rect x="536" y="184" width="154" height="226" rx="10" fill="#FDFDFB" stroke="#DCDACC" stroke-width="1.2"/>
+    <text x="548" y="206" fill="#26221B" font-size="11.5" font-weight="700">2. APPROVED</text>
+    <text x="548" y="222" fill="#8A897B" font-size="10">3 pinned contracts</text>
+    <g font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="9.5">
+      <rect x="546" y="234" width="134" height="24" rx="5" fill="#FAFBF8" stroke="#8A897B" stroke-width="1"/><text x="554" y="250" fill="#26221B">fs__read_file</text><text x="672" y="250" fill="#8A897B" font-size="8" text-anchor="end">#pin</text>
+      <rect x="546" y="264" width="134" height="24" rx="5" fill="#FAFBF8" stroke="#8A897B" stroke-width="1"/><text x="554" y="280" fill="#26221B">fs__list_dir</text><text x="672" y="280" fill="#8A897B" font-size="8" text-anchor="end">#pin</text>
+      <rect x="546" y="294" width="134" height="24" rx="5" fill="#FAFBF8" stroke="#8A897B" stroke-width="1"/><text x="554" y="310" fill="#26221B">gh__search</text><text x="672" y="310" fill="#8A897B" font-size="8" text-anchor="end">#pin</text>
+    </g>
+    <text x="613" y="374" fill="#8A897B" font-size="9.5" text-anchor="middle">schema drift voids the pin</text>
+    <text x="613" y="394" fill="#55554B" font-size="9.5" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" text-anchor="middle">toolhost approve</text>
+
+    <!-- Boundary: Agent Enables -->
+    <path d="M704 184 V 410" stroke="#8A897B" stroke-width="1.4" stroke-dasharray="4 4"/>
+    <g transform="translate(704, 204)">
+      <rect x="-34" y="-12" width="68" height="20" rx="10" fill="#55554B"/>
+      <text x="0" y="2" fill="#F1F1E9" font-size="9" font-weight="700" text-anchor="middle" letter-spacing="1">ENABLE</text>
+    </g>
+    <text x="704" y="422" fill="#55554B" font-size="9.5" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">agent verb</text>
+
+    <!-- Tier 3: Enabled -->
+    <rect x="720" y="184" width="162" height="226" rx="10" fill="#FAFBF8" stroke="#D97757" stroke-width="1.6"/>
+    <text x="732" y="206" fill="#B85C3E" font-size="11.5" font-weight="700">3. ENABLED</text>
+    <text x="732" y="222" fill="#8A897B" font-size="10">the live surface</text>
+    <g font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10">
+      <rect x="730" y="234" width="142" height="28" rx="6" fill="#D97757"/>
+      <text x="740" y="252" fill="#FBFBF7" font-weight="700">fs__read_file</text>
+      <circle cx="858" cy="248" r="3.5" fill="#FBFBF7"/>
+
+      <rect x="730" y="270" width="142" height="28" rx="6" fill="none" stroke="#8A897B" stroke-width="1" stroke-dasharray="4 4"/>
+      <text x="740" y="288" fill="#8A897B">fs__list_dir</text>
+      <text x="858" y="288" fill="#8A897B" font-size="8.5" text-anchor="end">off</text>
+    </g>
+    <text x="801" y="374" fill="#B85C3E" font-size="9.5" font-weight="600" text-anchor="middle">callable now</text>
+    <text x="801" y="394" fill="#55554B" font-size="9.5" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" text-anchor="middle">gateway__enable</text>
+
+    <!-- Agent Verbs Footer -->
+    <g transform="translate(360, 442)">
+      <rect x="0" y="0" width="520" height="48" rx="8" fill="#F3F2EA" stroke="#E2E0D4" stroke-width="1"/>
+      <text x="16" y="20" fill="#26221B" font-size="10.5" font-weight="700">AGENT CONTRACT</text>
+      <text x="130" y="20" fill="#55554B" font-size="10.5" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">gateway__discover · enable · disable · call · request</text>
+      <text x="16" y="36" fill="#8A897B" font-size="10">unapproved tools are omitted from tools/list — invisible means uncallable</text>
+    </g>
+
+    <!-- Agent Node -->
+    <rect x="960" y="196" width="260" height="202" rx="14" fill="#FDFDFB" stroke="#8A897B" stroke-width="1.3"/>
+    <text x="982" y="228" fill="#26221B" font-size="16" font-weight="700">the agent</text>
+    <text x="982" y="248" fill="#8A897B" font-size="11.5">claude · codex · devin · gemini</text>
+    <g font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10.5">
+      <rect x="980" y="266" width="220" height="32" rx="6" fill="#F1F1E9"/>
+      <text x="992" y="286" fill="#33322A">tools/list → [fs__read_file]</text>
+    </g>
+    <text x="982" y="324" fill="#55554B" font-size="11">sees 1 tool instead of 14</text>
+    <text x="982" y="342" fill="#8A897B" font-size="10.5">zero prompt bloat · zero accidental calls</text>
+    <text x="982" y="374" fill="#8A897B" font-size="10" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">one config entry: local-gateway</text>
+
+    <!-- Hot Path: the agent calls into the enabled tier -->
+    <path d="M960 282 H 882" stroke="#D97757" stroke-width="2" marker-end="url(#ah-clay)" fill="none"/>
+    <rect x="888" y="266" width="66" height="16" rx="3" fill="#FAFBF8"/>
+    <text x="921" y="278" fill="#B85C3E" font-size="9" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-weight="700" text-anchor="middle">call</text>
+
+    <!-- Audit Tap: the call path is tapped down into the log -->
+    <path d="M921 290 V 534" stroke="#8A897B" stroke-width="1.2" stroke-dasharray="3 3" fill="none"/>
+    <circle cx="921" cy="282" r="3" fill="#D97757"/>
+
+    <!-- Audit Footer -->
+    <rect x="60" y="534" width="1160" height="48" rx="8" fill="#F3F2EA" stroke="#DCDACC" stroke-width="1"/>
+    <g font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11">
+      <rect x="74" y="546" width="56" height="24" rx="4" fill="#E2E0D4"/>
+      <text x="102" y="562" fill="#55554B" font-weight="700" text-anchor="middle">AUDIT</text>
+      <text x="142" y="563" fill="#33322A">{"ts":"2026-10-18T15:30:00Z","actor":"agent","tool":"fs__read_file","upstream":"fs","ms":8}</text>
+      <text x="1204" y="563" fill="#8A897B" font-size="10.5" text-anchor="end">append-only JSONL · never arguments or secrets</text>
+    </g>
   </g>
 </svg>
