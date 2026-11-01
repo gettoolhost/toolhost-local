@@ -104,7 +104,7 @@ may hold is a deliberately `init --shared`-created `toolhost.json`.
 | `env var X is unset or empty` | export it before `serve`/`status` — load fails closed |
 | `backend X unreachable` | stderr line at boot/reload + `backend_error` audit; `toolhost status` shows it `down` |
 | `skipped be__tool: ...` | name can't be safely namespaced — audited `backend_error` |
-| oauth backend fails | `toolhost status` shows `grant MISSING` → `toolhost auth <name>` |
+| oauth backend fails | `toolhost status` shows `grant MISSING` → `toolhost mcp auth <name>` |
 | `client is closing` after a denied call | go-sdk < v1.8.0 bug — upgrade; denied calls must not kill sessions |
 | call hangs | impossible past `call_timeout` — check the audit for the `err` |
 | service won't start | `toolhost_serve.log` (macOS) / `journalctl --user -u toolhost` (Linux) |

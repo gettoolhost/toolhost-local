@@ -24,12 +24,12 @@ Two directions, kept apart:
 | `oauth` | `client_id?`, `client_secret?`, `scopes?`, `redirect_url?` | auth-code + PKCE; no `client_id` means dynamic client registration |
 
 - `auth` is invalid on `stdio` backends — subprocess creds go in `env`.
-- `oauth` grant: `toolhost auth <backend>` opens the browser, listens on
+- `oauth` grant: `toolhost mcp auth <backend>` opens the browser, listens on
   `http://127.0.0.1:8484/callback` (override with `redirect_url`; must
   match the registered/DCR'd URI). `serve`/`discover` reuse and refresh
   the stored grant — they never open a browser; a missing grant fails
   with the remedy.
-- `toolhost logout <backend>` drops the stored grant.
+- `toolhost mcp logout <backend>` drops the stored grant.
 
 ## stdio backend environment
 

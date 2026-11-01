@@ -1,8 +1,8 @@
 // toolhost — one governed front door between your agent and your MCP servers.
 //
-// Commands: see usage() — every command takes -c <path>; unset resolves to
-// the folder's private env, then ./.toolhost/toolhost.json, then the global
-// ~/.toolhost/toolhost.json.
+// Commands: see app.Verbs (`toolhost help`) — every command takes -c
+// <path>; unset resolves to the folder's private env, then
+// ./.toolhost/toolhost.json, then the global ~/.toolhost/toolhost.json.
 package main
 
 import (

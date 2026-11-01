@@ -68,7 +68,7 @@ type Meta struct {
 // (SEP-2567 sessionless): no Mcp-Session-Id, each request gets a temporary
 // session. Modern clients can receive pushed tools/list_changed through
 // subscriptions/listen; older clients served sessionlessly cannot. The
-// toolhost__* meta-tools are the pull-based path. Stateful is the compat
+// gateway__* meta-tools are the pull-based path. Stateful is the compat
 // opt-in for older clients that must hold a session for pushed list changes.
 // DNS rebinding protection stays on either way (SDK default: non-localhost
 // Host headers on localhost addresses get 403).

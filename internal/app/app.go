@@ -729,7 +729,7 @@ func Serve(ctx context.Context, path string, w io.Writer, stdio bool) error {
 		fmt.Fprintf(w, "skipped %s__%s: %s\n", s.Backend, s.Tool, s.Reason)
 	}
 	if reqs, err := config.LoadRequests(path); err == nil && len(reqs) > 0 {
-		fmt.Fprintf(w, "%d pending agent request(s) — review with: toolhost status\n", len(reqs))
+		fmt.Fprintf(w, "%d pending agent request(s) — review with: toolhost requests\n", len(reqs))
 	}
 
 	live := &liveSet{
