@@ -1,19 +1,14 @@
-# toolhost-local release pipeline — push a v* tag; .github/workflows/
-# release.yml runs this, signs the checksums (cosign keyless), attests
-# build provenance, verifies the checksums, then un-drafts the GitHub
-# release. The ghcr image, Homebrew cask, and MCP registry entry publish
-# inside this run — only the release page stays draft until verify.
-# Local fallback: `goreleaser release --clean` (needs docker + a ghcr
-# login and a TAP_GITHUB_TOKEN-capable GITHUB_TOKEN env) — also produces
-# a draft; un-draft with `gh release edit vX.Y.Z --draft=false`.
+# ToolHost Local release pipeline. Push a v* tag and
+# .github/workflows/release.yml runs this as a draft, signs the checksums
+# (cosign keyless), attests build provenance, verifies all of it, then
+# un-drafts the release. Only then is the Homebrew cask, written here to
+# dist/homebrew/Casks, pushed to the tap: it never points at assets that
+# failed verification. Nothing else is published (no image, no registry).
 version: 2
 
 project_name: toolhost
 
 release:
-  # Only the GitHub release page is draft-gated — the ghcr image, Homebrew
-  # cask, and MCP registry entry publish inside this run, before CI's
-  # checksum/signature verification.
   draft: true
 
 builds:
@@ -40,46 +35,24 @@ checksum:
 changelog:
   use: github-native
 
-# OCI image → ghcr.io. Exists for the MCP registry package channel and
-# container workflows; the binary serves both HTTP and --stdio.
-dockers_v2:
-  - images:
-      - ghcr.io/gettoolhost/toolhost
-    tags:
-      - "{{ .Version }}"
-      - latest
-    labels:
-      org.opencontainers.image.source: https://github.com/gettoolhost/toolhost-local
-      # MCP registry requires this label on the image.
-      io.modelcontextprotocol.server.name: io.github.gettoolhost/toolhost-local
-
-# Homebrew: `brew install gettoolhost/tap/toolhost` — needs a
-# gettoolhost/homebrew-tap repo before the first release.
+# Homebrew: `brew install gettoolhost/tap/toolhost`. The workflow pushes
+# the cask after verification, so goreleaser only writes it.
 homebrew_casks:
   - name: toolhost
     repository:
       owner: gettoolhost
       name: homebrew-tap
     directory: Casks
+    skip_upload: true
     binaries: [toolhost]
     homepage: https://github.com/gettoolhost/toolhost-local
-    description: "One governed front door between your agent and your MCP servers"
-
-# MCP server registry — server.json generated and published by goreleaser
-# via GitHub OIDC (id-token: write in the release workflow).
-mcp:
-  name: io.github.gettoolhost/toolhost-local
-  title: Toolhost
-  description: "One governed front door between an agent and its MCP servers — human-approved tool allowlisting, audit, and backend credential isolation"
-  homepage: https://github.com/gettoolhost/toolhost-local
-  auth:
-    type: github-oidc
-  repository:
-    url: https://github.com/gettoolhost/toolhost-local
-    source: github
-    id: "1409296692"
-  packages:
-    - registry_type: oci
-      identifier: "ghcr.io/gettoolhost/toolhost:{{ .Version }}"
-      transport:
-        type: stdio
+    description: "Local MCP gateway: your agents see only the tools you approved"
+    hooks:
+      post:
+        # The binary isn't notarised. Homebrew quarantines what it
+        # downloads, and Gatekeeper would refuse to run it; install.sh
+        # clears the same attribute.
+        install_steps: |
+          on_macos do
+            run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ .StagedPath }}/toolhost"]
+          end

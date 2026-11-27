@@ -6,8 +6,7 @@ on:
 
 permissions:
   contents: write      # create/edit the GitHub release
-  packages: write      # push the OCI image to ghcr.io
-  id-token: write      # cosign keyless signing + provenance + MCP registry OIDC
+  id-token: write      # cosign keyless signing + provenance
   attestations: write  # actions/attest-build-provenance
 
 jobs:
@@ -21,18 +20,28 @@ jobs:
         with:
           go-version: "1.26.2"
       - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-      - name: ghcr login
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+      # Release notes are written by hand when .github/release-notes/<tag>.md
+      # exists; otherwise GitHub generates them from the merged PRs.
+      - name: Release notes
+        id: notes
+        run: |
+          f=".github/release-notes/${GITHUB_REF_NAME}.md"
+          if [ -f "$f" ]; then echo "args=--release-notes=$f" >> "$GITHUB_OUTPUT"; fi
       - name: Build + draft release
         uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
         with:
-          version: "~> v2"
-          args: release --clean
+          version: "v2.20.3"
+          args: release --clean ${{ steps.notes.outputs.args }}
         env:
-          # The Actions GITHUB_TOKEN can't push to homebrew-tap — a PAT or
-          # GitHub App token with repo scope on both repos is required.
-          GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Kept with the run, so the cask can be published by hand when the
+      # tap token below isn't set.
+      - name: Keep the cask
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: homebrew-cask
+          path: dist/homebrew/Casks/toolhost.rb
+          if-no-files-found: error
       - name: Sign checksums (keyless)
         run: |
           cd dist
@@ -45,7 +54,10 @@ jobs:
       - name: Attest build provenance
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
-          subject-path: dist/*
+          subject-path: |
+            dist/toolhost_*.tar.gz
+            dist/toolhost_*.zip
+            dist/checksums.txt
       - name: Verify before publish
         run: |
           set -euo pipefail
@@ -75,3 +87,23 @@ jobs:
         run: gh release edit "${GITHUB_REF_NAME}" --draft=false
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Only now, with the assets verified and public, does the cask go to
+      # the tap. The Actions GITHUB_TOKEN can't write to another repo, so
+      # this needs TAP_GITHUB_TOKEN (contents: write on homebrew-tap);
+      # without it the step says so and the cask waits in the artifact.
+      - name: Publish the Homebrew cask
+        env:
+          GH_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::TAP_GITHUB_TOKEN is not set; the cask is in the homebrew-cask artifact, not the tap"
+            exit 0
+          fi
+          path=repos/gettoolhost/homebrew-tap/contents/Casks/toolhost.rb
+          sha=$(gh api "$path" --jq .sha 2>/dev/null || true)
+          gh api -X PUT "$path" \
+            -f message="toolhost ${GITHUB_REF_NAME}" \
+            -f content="$(base64 -w0 dist/homebrew/Casks/toolhost.rb)" \
+            ${sha:+-f sha="$sha"} >/dev/null
+          echo "cask for ${GITHUB_REF_NAME} pushed to gettoolhost/homebrew-tap"
