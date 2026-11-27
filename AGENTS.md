@@ -41,7 +41,7 @@ the separator without understanding why `::` was rejected.
 
 - Releases are always `v0.0.x` patch bumps — never bump minor/major.
 - Config resolution, nearest scope first: `-c` → this folder's private
-  env (`~/.toolhost/projects/<id>/toolhost.json`) → `./toolhost.json` →
+  env (`~/.toolhost/projects/<id>/toolhost.json`) → `./.toolhost/toolhost.json` →
   `~/.toolhost/toolhost.json`. Credentials and runtime state live in the
   env's state dir (`config.StateDir`) — beside the config inside home,
   keyed under `projects/` outside it — never in the working folder.
