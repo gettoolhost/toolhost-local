@@ -106,10 +106,10 @@ var Verbs = []Verb{
 		"toolhost audit [-n 20] [-kind tool_call]\n\n" +
 			"JSONL in the env's state dir: calls, refusals, governance actions,\n" +
 			"reloads, backend errors. Never arguments, never secrets."},
-	{"version", "", "print the version", "toolhost version"},
-	{"completion", "", "shell completion script — bash|zsh|fish",
+	{"version", "cli", "print the version", "toolhost version"},
+	{"completion", "cli", "shell completion script — bash|zsh|fish",
 		"toolhost completion <bash|zsh|fish>\n\nPrints the script — no dependencies, source it or save it."},
-	{"help", "", "this list, or one verb: toolhost help <verb>", "toolhost help [<verb>]"},
+	{"help", "cli", "this list, or one verb: toolhost help <verb>", "toolhost help [<verb>]"},
 }
 
 // Help renders the grouped verb list, or one verb's deeper help.
