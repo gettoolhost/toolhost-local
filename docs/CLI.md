@@ -160,6 +160,11 @@ toolhost doctor                # check the install; no running gateway needed
   config`, and `doctor` exits 1 until the config loads again. This holds
   even when the file no longer parses, so neither command can read the
   gateway's address from it.
+- While a running gateway's tools don't resolve (two servers claim one
+  name), `status` and `doctor` say `could not resolve the tools since
+  <time>: <error>; serving no tools from any server until they resolve`,
+  and `doctor` exits 1 until they do. Both commands cover stdio gateways
+  too.
 
 - The MCP server entry name is `local-gateway` at every scope — a
   project entry shadows a user one. Entries under other names are never

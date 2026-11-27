@@ -148,6 +148,7 @@ func TestStatusAndDoctorReportTheGatewaysView(t *testing.T) {
 	srv := httptest.NewServer(fd.Handler())
 	t.Cleanup(srv.Close)
 	listen := strings.TrimPrefix(srv.URL, "http://")
+	live.listen = listen
 
 	breakConfig(t, cfgPath)
 	live.reload()

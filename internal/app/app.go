@@ -537,39 +537,36 @@ func (t bearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 // gateway's address or token, so status reads the gateways' own records
 // to say which of them still run the previous config.
 func Status(ctx context.Context, path string, asJSON bool, w io.Writer) error {
+	degraded := config.ReportedDegraded(path)
 	f, err := config.Load(path)
 	if err != nil {
-		previous := config.ReportedInvalid(path)
-		if len(previous) == 0 {
+		if len(degraded) == 0 {
 			return err
 		}
 		if asJSON {
-			// The same config_error a live /status carries, from the
-			// earliest failure, plus each gateway's own record.
-			first := previous[0]
-			for _, s := range previous[1:] {
-				if s.Since.Before(first.Since) {
-					first = s
-				}
+			// The config_error and resolve_error a live /status carries,
+			// each from its earliest failure, plus every gateway's record.
+			view := map[string]any{"up": true, "config": path, "gateways": degraded}
+			if ce := earliest(degraded, func(d config.Degraded) *config.Fault { return d.ConfigError }); ce != nil {
+				view["config_error"] = ce
 			}
-			if jerr := jsonOut(w, map[string]any{"up": true, "config": path,
-				"config_error": map[string]any{"since": first.Since, "error": first.Err},
-				"gateways":     previous}); jerr != nil {
+			if re := earliest(degraded, func(d config.Degraded) *config.Fault { return d.ResolveError }); re != nil {
+				view["resolve_error"] = re
+			}
+			if jerr := jsonOut(w, view); jerr != nil {
 				return jerr
 			}
 		} else {
-			for _, s := range previous {
-				fmt.Fprintln(w, invalidMessage(s))
-			}
+			printDegraded(w, degraded, "")
 		}
-		return fmt.Errorf("config %s doesn't load; %s", path, stillRunning(len(previous)))
+		return fmt.Errorf("config %s doesn't load; %s", path, stillRunning(len(degraded)))
 	}
 
 	token, err := f.ResolvedToken()
 	if err != nil {
 		// Tokenless env (e.g. a committed project config) — the live
 		// probe needs the bearer, so fall back to the config view.
-		return printConfigStatus(f, path, asJSON, w)
+		return printConfigStatus(f, path, asJSON, degraded, w)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+f.Listen+"/status", nil)
 	if err != nil {
@@ -580,18 +577,18 @@ func Status(ctx context.Context, path string, asJSON bool, w io.Writer) error {
 	resp, err := client.Do(req)
 	if err != nil {
 		if asJSON {
-			return jsonOut(w, map[string]any{"up": false, "config": path})
+			return jsonOut(w, map[string]any{"up": false, "config": path, "gateways": degraded})
 		}
 		fmt.Fprintf(w, "gateway: DOWN — %s/mcp not reachable\n\n", f.Listen)
-		return printConfigStatus(f, path, asJSON, w)
+		return printConfigStatus(f, path, asJSON, degraded, w)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		if asJSON {
-			return jsonOut(w, map[string]any{"up": false, "code": resp.StatusCode, "config": path})
+			return jsonOut(w, map[string]any{"up": false, "code": resp.StatusCode, "config": path, "gateways": degraded})
 		}
 		fmt.Fprintf(w, "gateway: %s — /status answered %s\n\n", f.Listen, resp.Status)
-		return printConfigStatus(f, path, asJSON, w)
+		return printConfigStatus(f, path, asJSON, degraded, w)
 	}
 	var report struct {
 		Mode      string `json:"mode"`
@@ -603,12 +600,10 @@ func Status(ctx context.Context, path string, asJSON bool, w io.Writer) error {
 			Name   string `json:"name"`
 			Reason string `json:"reason"`
 		} `json:"requested"`
-		Drifted     []string `json:"drifted"`
-		ConfigError *struct {
-			Since time.Time `json:"since"`
-			Error string    `json:"error"`
-		} `json:"config_error,omitempty"`
-		Backends map[string]struct {
+		Drifted      []string      `json:"drifted"`
+		ConfigError  *config.Fault `json:"config_error,omitempty"`
+		ResolveError *config.Fault `json:"resolve_error,omitempty"`
+		Backends     map[string]struct {
 			Transport string `json:"transport"`
 			Tools     int    `json:"tools"`
 			Up        bool   `json:"up"`
@@ -623,9 +618,12 @@ func Status(ctx context.Context, path string, asJSON bool, w io.Writer) error {
 	}
 
 	fmt.Fprintf(w, "gateway: UP — http://%s/mcp (%s mode)\n", report.Listen, report.Mode)
-	if ce := report.ConfigError; ce != nil {
-		fmt.Fprintf(w, "config invalid since %s: %s; still running the previous config\n", stamp(ce.Since), ce.Error)
+	for _, line := range faultLines(config.Degraded{ConfigError: report.ConfigError, ResolveError: report.ResolveError}) {
+		fmt.Fprintln(w, line)
 	}
+	// Other gateways on this config, such as stdio ones, report through
+	// their records; this one already answered.
+	printDegraded(w, degraded, report.Listen)
 	fmt.Fprintf(w, "tools:   %d enabled / %d approved\n", report.Enabled, report.Approved)
 	for _, name := range sortedKeys(report.Backends) {
 		b := report.Backends[name]
@@ -658,22 +656,58 @@ func Status(ctx context.Context, path string, asJSON bool, w io.Writer) error {
 	return nil
 }
 
-// invalidMessage is one gateway's report that the config doesn't load and it
-// still serves the previous one.
-func invalidMessage(s config.Invalid) string {
-	where := "over stdio"
-	if s.Listen != "" {
-		where = "at http://" + s.Listen + "/mcp"
+// faultLines says what keeps a gateway from serving what its config says,
+// one line per fault. With no pid, the lines are the gateway's own report.
+func faultLines(d config.Degraded) []string {
+	who := ""
+	if d.PID != 0 {
+		where := "over stdio"
+		if d.Listen != "" {
+			where = "at http://" + d.Listen + "/mcp"
+		}
+		who = fmt.Sprintf(" (gateway pid %d %s)", d.PID, where)
 	}
-	return fmt.Sprintf("config invalid since %s: %s; still running the previous config (gateway pid %d %s)",
-		stamp(s.Since), s.Err, s.PID, where)
+	var lines []string
+	if f := d.ConfigError; f != nil {
+		lines = append(lines, fmt.Sprintf("config invalid since %s: %s; still running the previous config%s",
+			stamp(f.Since), f.Error, who))
+	}
+	if f := d.ResolveError; f != nil {
+		lines = append(lines, fmt.Sprintf("could not resolve the tools since %s: %s; serving no tools from any server until they resolve%s",
+			stamp(f.Since), f.Error, who))
+	}
+	return lines
+}
+
+// printDegraded prints every gateway's record except the one listening at
+// skip, which reported over /status.
+func printDegraded(w io.Writer, degraded []config.Degraded, skip string) {
+	for _, d := range degraded {
+		if skip != "" && d.Listen == skip {
+			continue
+		}
+		for _, line := range faultLines(d) {
+			fmt.Fprintln(w, line)
+		}
+	}
+}
+
+// earliest is the oldest fault of one kind across the records.
+func earliest(degraded []config.Degraded, kind func(config.Degraded) *config.Fault) *config.Fault {
+	var first *config.Fault
+	for _, d := range degraded {
+		if f := kind(d); f != nil && (first == nil || f.Since.Before(first.Since)) {
+			first = f
+		}
+	}
+	return first
 }
 
 func stillRunning(n int) string {
 	if n == 1 {
-		return "1 gateway is still running the previous config"
+		return "1 gateway is still running"
 	}
-	return fmt.Sprintf("%d gateways are still running the previous config", n)
+	return fmt.Sprintf("%d gateways are still running", n)
 }
 
 func stamp(t time.Time) string { return t.Local().Format("2006-01-02 15:04:05 MST") }
@@ -681,7 +715,7 @@ func stamp(t time.Time) string { return t.Local().Format("2006-01-02 15:04:05 MS
 // printConfigStatus is the down-gateway view — everything knowable without
 // a live process: configured backends, gate counts, pending petitions, and
 // which oauth backends hold stored grants.
-func printConfigStatus(f *config.File, path string, asJSON bool, w io.Writer) error {
+func printConfigStatus(f *config.File, path string, asJSON bool, degraded []config.Degraded, w io.Writer) error {
 	if asJSON {
 		reqs, _ := config.LoadRequests(path)
 		en, has := f.EnabledSet()
@@ -692,6 +726,7 @@ func printConfigStatus(f *config.File, path string, asJSON bool, w io.Writer) er
 			"approved":  len(f.ApprovedSet()),
 			"requested": config.PendingRequests(reqs),
 			"backends":  f.Backends,
+			"gateways":  degraded,
 		}
 		if has {
 			view["enabled"] = len(en)
@@ -700,6 +735,7 @@ func printConfigStatus(f *config.File, path string, asJSON bool, w io.Writer) er
 		}
 		return jsonOut(w, view)
 	}
+	printDegraded(w, degraded, "")
 	fmt.Fprintf(w, "config:  %s (mode %s)\n", path, f.Mode)
 	for _, name := range sortedKeys(f.Backends) {
 		b := f.Backends[name]
@@ -836,7 +872,7 @@ func Serve(ctx context.Context, path string, w io.Writer, stdio bool) error {
 	// Shutdown closes the LIVE pool, not the boot slice — sessions replaced
 	// by reconnects would otherwise leak their transport and watcher.
 	defer live.closeAll()
-	defer live.endInvalid()
+	defer live.endDegraded()
 
 	if stdio {
 		srv := frontdoor.NewBare(res, sink, live.meta())
@@ -871,40 +907,56 @@ func Serve(ctx context.Context, path string, w io.Writer, stdio bool) error {
 	return nil
 }
 
-// noteInvalid records that the config on disk doesn't load and the previous
-// one keeps serving. The first failure sets the time; a later one replaces
-// the error. Callers hold l.mu.
-func (l *liveSet) noteInvalid(err error) {
-	if l.invalid == nil {
-		l.invalid = &config.Invalid{Since: time.Now()}
-		if !l.stdio {
-			l.invalid.Listen = l.listen
-		}
+// noteFault records a failure that keeps the gateway from serving what its
+// config says: the config doesn't load (ConfigError) or the tools don't
+// resolve (ResolveError). The first failure sets the time; a later one
+// replaces the error. Callers hold l.mu.
+func (l *liveSet) noteFault(slot **config.Fault, err error) {
+	if *slot == nil {
+		*slot = &config.Fault{Since: time.Now()}
 	}
-	l.invalid.Err = err.Error()
-	var rerr error
+	(*slot).Error = err.Error()
+	l.syncMark()
+}
+
+// clearFault ends a failure. Callers hold l.mu.
+func (l *liveSet) clearFault(slot **config.Fault) {
+	if *slot == nil {
+		return
+	}
+	*slot = nil
+	l.syncMark()
+}
+
+// syncMark brings the gateway's record in line with its faults: written
+// while any lasts, removed when none does. Callers hold l.mu.
+func (l *liveSet) syncMark() {
+	d := l.degraded
+	if d.ConfigError == nil && d.ResolveError == nil {
+		l.mark.Clear()
+		l.mark = nil
+		return
+	}
+	if !l.stdio {
+		d.Listen = l.listen
+	}
+	var err error
 	if l.mark == nil {
-		l.mark, rerr = config.MarkInvalid(l.path, *l.invalid)
+		l.mark, err = config.MarkDegraded(l.path, d)
 	} else {
-		rerr = l.mark.Update(*l.invalid)
+		err = l.mark.Update(d)
 	}
-	if rerr != nil {
-		slog.Default().Warn("status and doctor won't see the invalid config", "err", rerr)
+	if err != nil {
+		slog.Default().Warn("status and doctor won't see why the gateway is degraded", "err", err)
 	}
 }
 
-// clearInvalid ends the record: the config loaded, or the gateway is
-// stopping. Callers hold l.mu.
-func (l *liveSet) clearInvalid() {
-	l.invalid = nil
-	l.mark.Clear()
-	l.mark = nil
-}
-
-func (l *liveSet) endInvalid() {
+// endDegraded drops the record: the gateway is stopping and serves nothing.
+func (l *liveSet) endDegraded() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.clearInvalid()
+	l.degraded.ConfigError, l.degraded.ResolveError = nil, nil
+	l.syncMark()
 }
 
 func toolCount(n int) string {
@@ -936,11 +988,12 @@ type liveSet struct {
 	mode                    string
 	stdio                   bool
 
-	// invalid is set while the config on disk doesn't load and the
-	// previous one keeps serving; mark is this gateway's record of it,
-	// which status and doctor read. Both are guarded by mu.
-	invalid *config.Invalid
-	mark    *config.InvalidMark
+	// degraded holds what keeps the gateway from serving what its config
+	// says: the config doesn't load, or the tools don't resolve. mark is
+	// its record on disk, which status and doctor read. Both are guarded
+	// by mu.
+	degraded config.Degraded
+	mark     *config.DegradedMark
 
 	// ctx is the gateway-lifetime context — session watchers and reconnect
 	// dials live as long as Serve does. Request contexts (which die with
@@ -994,7 +1047,7 @@ func (l *liveSet) watch(ctx context.Context) {
 	gone := false
 	tick := time.NewTicker(1500 * time.Millisecond)
 	defer tick.Stop()
-	defer l.endInvalid() // the gateway is stopping: it serves nothing now
+	defer l.endDegraded() // the gateway is stopping: it serves nothing now
 	for {
 		select {
 		case <-ctx.Done():
@@ -1044,13 +1097,13 @@ func (l *liveSet) reload() {
 		log.Warn("reload: invalid config — keeping current surface", "err", err)
 		l.sink.Record(core.Event{TS: time.Now(), Kind: core.EventReload, Err: err.Error()})
 		l.mu.Lock()
-		l.noteInvalid(err)
+		l.noteFault(&l.degraded.ConfigError, err)
 		l.mu.Unlock()
 		return
 	}
 
 	l.mu.Lock()
-	l.clearInvalid()
+	l.clearFault(&l.degraded.ConfigError)
 	reloadAudit := auditLogPath(f, l.path)
 	if f.Token != l.token || f.Listen != l.listen || reloadAudit != l.auditLog || f.Mode != l.mode {
 		fmt.Fprintln(l.w, "reload: listen/token/audit_log/mode changes take effect on restart — keeping current values")
@@ -1183,8 +1236,10 @@ func (l *liveSet) publish(f *config.File) int {
 		l.sink.Record(core.Event{TS: time.Now(), Kind: core.EventReload, Err: err.Error()})
 		fmt.Fprintf(l.w, "resolve failed: %s — serving no tools until it resolves\n", err)
 		l.fd.Reload(&core.Resolution{})
+		l.noteFault(&l.degraded.ResolveError, err)
 		return -1
 	}
+	l.clearFault(&l.degraded.ResolveError)
 	for _, s := range res.Skipped {
 		l.sink.Record(core.Event{TS: time.Now(), Kind: core.EventBackendError, Backend: s.Backend, Tool: s.Tool, Err: "skipped: " + s.Reason})
 	}
@@ -1630,8 +1685,11 @@ func (l *liveSet) metaReport() any {
 		"requested": reqs,
 		"drifted":   drifted,
 	}
-	if l.invalid != nil {
-		report["config_error"] = map[string]any{"since": l.invalid.Since, "error": l.invalid.Err}
+	if ce := l.degraded.ConfigError; ce != nil {
+		report["config_error"] = map[string]any{"since": ce.Since, "error": ce.Error}
+	}
+	if re := l.degraded.ResolveError; re != nil {
+		report["resolve_error"] = map[string]any{"since": re.Since, "error": re.Error}
 	}
 	return report
 }

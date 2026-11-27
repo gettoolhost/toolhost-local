@@ -86,7 +86,7 @@ flowchart LR
 - **Bounded calls:** `call_timeout` defaults to `60s`, permits a per-backend override, and never widens a caller's earlier deadline.
 - **Stdio front door:** `serve --stdio` reuses the governed surface for spawn-only clients; the owning process replaces bearer authentication.
 - **User service:** `install` uses launchd or systemd user units; it needs neither root nor a separate daemon.
-- **Ambiguity denies:** bad names skip, duplicate qualified names error, and unreachable backends contribute zero tools. A resolve that fails serves no upstream tools until one succeeds; the five verbs stay.
+- **Ambiguity denies:** bad names skip, duplicate qualified names error, and unreachable backends contribute zero tools. A resolve that fails serves no upstream tools until one succeeds; the five verbs stay, and `status`, `doctor` and GET /status say why and since when.
 - **Reconnecting pool:** dead or unreachable backends retry on exponential backoff (2s→5m, jittered) without holding the live-set lock during dials; session-death signals carry upstream identity so stale sessions can't kill their replacements, and a config change mid-dial closes the stale result unclaimed.
 - **Separated auth:** downstream uses one constant-time-checked bearer token; upstream auth is per backend, with OAuth grants stored outside config.
 - **Secret references:** `env:NAME` stays literal in saved config and resolves at the boundary; missing or empty variables fail closed.

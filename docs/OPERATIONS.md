@@ -81,6 +81,11 @@ retries. Every drop and reconnect is audited (`backend_error` /
   current surface and audits `reload` + err. `status` and `doctor` report
   `config invalid since <time>: <error>; still running the previous
   config`, and `doctor` exits 1, until it loads again.
+- A resolve that fails (two servers claim one name) serves no tools from
+  any server until it resolves; the five `gateway__` verbs stay. `status`
+  and `doctor` report `could not resolve the tools since <time>: <error>`,
+  and `doctor` exits 1, until it does. GET /status carries
+  `resolve_error`.
 - Every writer (the CLI, the agent's enable and disable, petitions and
   verdicts) takes the file's lock first, waiting up to 10s for another
   writer. A save from a stale read fails with `config changed on disk
@@ -98,7 +103,7 @@ retries. Every drop and reconnect is audited (`backend_error` /
 | `toolhost_audit.jsonl` | the audit log, best-effort and rotated at `audit_max_mb` (state dir) |
 | `toolhost_requests.json` | pending agent requests (state dir) |
 | `~/.toolhost/locks/*.lock` | write locks, one per config or request queue, keyed by the file's real path; empty, safe to leave |
-| `invalid/<pid>.json` | a running gateway's note that the config doesn't load and it still serves the previous one; status and doctor read it (state dir). The gateway holds `<pid>.lock` while the note is true, so a note left by a gateway that died is ignored |
+| `degraded/<pid>.json` | a running gateway's note that it isn't serving what the config says: the config doesn't load, or the tools don't resolve. Status and doctor read it (state dir). The gateway holds `<pid>.lock` while the note is true, so a note left by a gateway that died is ignored |
 | `toolhost_serve.log` | service-mode stdout/stderr (beside config) |
 
 For the global env the state dir is `~/.toolhost/` itself; for a

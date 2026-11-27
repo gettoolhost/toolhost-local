@@ -34,11 +34,15 @@ func Doctor(ctx context.Context, cfgPath string, w io.Writer) error {
 	}
 
 	// A gateway that can't load the config keeps serving the previous one,
-	// so a revocation in a broken edit hasn't taken effect. That fails
-	// doctor for as long as it lasts, whatever the file says now.
-	previous := config.ReportedInvalid(cfgPath)
-	for _, s := range previous {
-		fmt.Fprintf(w, "✗ %s\n", invalidMessage(s))
+	// so a revocation in a broken edit hasn't taken effect; one whose tools
+	// don't resolve serves none. Either fails doctor for as long as it
+	// lasts, whatever the file says now.
+	var degraded int
+	for _, d := range config.ReportedDegraded(cfgPath) {
+		for _, line := range faultLines(d) {
+			fmt.Fprintf(w, "✗ %s\n", line)
+			degraded++
+		}
 	}
 
 	f, err := config.Load(cfgPath)
@@ -49,10 +53,10 @@ func Doctor(ctx context.Context, cfgPath string, w io.Writer) error {
 		} else {
 			fmt.Fprintf(w, "  fix: toolhost init -c %s\n", cfgPath)
 		}
-		return fmt.Errorf("doctor: %d check(s) failed", 1+len(previous))
+		return fmt.Errorf("doctor: %d check(s) failed", 1+degraded)
 	}
 	fmt.Fprintf(w, "✓ config %s parses\n", cfgPath)
-	failed += len(previous)
+	failed += degraded
 
 	token, err := f.ResolvedToken()
 	ok(err == nil && token != "", "gateway token resolves",
