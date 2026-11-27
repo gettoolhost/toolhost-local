@@ -77,7 +77,10 @@ retries. Every drop and reconnect is audited (`backend_error` /
 - Restart-required: `listen`, `token`, `audit_log`, `mode` — logged,
   current values kept.
 - Atomic saves (tmp+rename) mean the watcher never reads a torn write.
-- An invalid config keeps the current surface and audits `reload` + err.
+- A config that doesn't load (invalid, unreadable or deleted) keeps the
+  current surface and audits `reload` + err. `status` and `doctor` report
+  `config invalid since <time>: <error>; still running the previous
+  config`, and `doctor` exits 1, until it loads again.
 - Every writer (the CLI, the agent's enable and disable, petitions and
   verdicts) takes the file's lock first, waiting up to 10s for another
   writer. A save from a stale read fails with `config changed on disk
@@ -95,6 +98,7 @@ retries. Every drop and reconnect is audited (`backend_error` /
 | `toolhost_audit.jsonl` | the audit log, best-effort and rotated at `audit_max_mb` (state dir) |
 | `toolhost_requests.json` | pending agent requests (state dir) |
 | `~/.toolhost/locks/*.lock` | write locks, one per config or request queue, keyed by the file's real path; empty, safe to leave |
+| `invalid/<pid>.json` | a running gateway's note that the config doesn't load and it still serves the previous one; status and doctor read it (state dir). The gateway holds `<pid>.lock` while the note is true, so a note left by a gateway that died is ignored |
 | `toolhost_serve.log` | service-mode stdout/stderr (beside config) |
 
 For the global env the state dir is `~/.toolhost/` itself; for a

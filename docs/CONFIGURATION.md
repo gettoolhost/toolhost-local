@@ -87,5 +87,9 @@ even on machines that only spawn stdio.
 `serve` polls the file every ~1.5s. Live-swapped: `approved`, `enabled`,
 `backends` (unchanged sessions kept; changed re-dialed), `call_timeout`.
 Restart-required: `listen`, `token`, `audit_log`, `mode` — a change is
-logged and current values kept. Invalid saves keep the current surface
-and audit a `reload` event with the error.
+logged and current values kept. A config that doesn't load (invalid,
+unreadable or deleted) keeps the current surface rather than dropping
+every tool on a typo, and audits a `reload` event with the error. Until it
+loads again, `toolhost status` and `toolhost doctor` say `config invalid
+since <time>: <error>; still running the previous config`, and `doctor`
+exits 1: a revocation in a broken edit hasn't taken effect.

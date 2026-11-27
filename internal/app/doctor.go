@@ -33,13 +33,26 @@ func Doctor(ctx context.Context, cfgPath string, w io.Writer) error {
 		}
 	}
 
+	// A gateway that can't load the config keeps serving the previous one,
+	// so a revocation in a broken edit hasn't taken effect. That fails
+	// doctor for as long as it lasts, whatever the file says now.
+	previous := config.ReportedInvalid(cfgPath)
+	for _, s := range previous {
+		fmt.Fprintf(w, "✗ %s\n", invalidMessage(s))
+	}
+
 	f, err := config.Load(cfgPath)
 	if err != nil {
 		fmt.Fprintf(w, "✗ config: %v\n", err)
-		fmt.Fprintf(w, "  fix: toolhost init -c %s\n", cfgPath)
-		return fmt.Errorf("doctor: %d check(s) failed", 1)
+		if _, serr := os.Stat(cfgPath); serr == nil {
+			fmt.Fprintf(w, "  fix: correct %s — a running gateway reloads it within ~2s\n", cfgPath)
+		} else {
+			fmt.Fprintf(w, "  fix: toolhost init -c %s\n", cfgPath)
+		}
+		return fmt.Errorf("doctor: %d check(s) failed", 1+len(previous))
 	}
 	fmt.Fprintf(w, "✓ config %s parses\n", cfgPath)
+	failed += len(previous)
 
 	token, err := f.ResolvedToken()
 	ok(err == nil && token != "", "gateway token resolves",

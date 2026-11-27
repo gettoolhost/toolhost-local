@@ -533,11 +533,36 @@ func (t bearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 // the agent's tool surface. If the gateway isn't running, it still
 // prints what the config knows: backends, counts, pending requests,
 // stored grants. asJSON emits the report (or config view) verbatim —
-// the form harnesses poll.
+// the form harnesses poll. A config that doesn't load can't name the
+// gateway's address or token, so status reads the gateways' own records
+// to say which of them still run the previous config.
 func Status(ctx context.Context, path string, asJSON bool, w io.Writer) error {
 	f, err := config.Load(path)
 	if err != nil {
-		return err
+		previous := config.ReportedInvalid(path)
+		if len(previous) == 0 {
+			return err
+		}
+		if asJSON {
+			// The same config_error a live /status carries, from the
+			// earliest failure, plus each gateway's own record.
+			first := previous[0]
+			for _, s := range previous[1:] {
+				if s.Since.Before(first.Since) {
+					first = s
+				}
+			}
+			if jerr := jsonOut(w, map[string]any{"up": true, "config": path,
+				"config_error": map[string]any{"since": first.Since, "error": first.Err},
+				"gateways":     previous}); jerr != nil {
+				return jerr
+			}
+		} else {
+			for _, s := range previous {
+				fmt.Fprintln(w, invalidMessage(s))
+			}
+		}
+		return fmt.Errorf("config %s doesn't load; %s", path, stillRunning(len(previous)))
 	}
 
 	token, err := f.ResolvedToken()
@@ -578,7 +603,11 @@ func Status(ctx context.Context, path string, asJSON bool, w io.Writer) error {
 			Name   string `json:"name"`
 			Reason string `json:"reason"`
 		} `json:"requested"`
-		Drifted  []string `json:"drifted"`
+		Drifted     []string `json:"drifted"`
+		ConfigError *struct {
+			Since time.Time `json:"since"`
+			Error string    `json:"error"`
+		} `json:"config_error,omitempty"`
 		Backends map[string]struct {
 			Transport string `json:"transport"`
 			Tools     int    `json:"tools"`
@@ -594,6 +623,9 @@ func Status(ctx context.Context, path string, asJSON bool, w io.Writer) error {
 	}
 
 	fmt.Fprintf(w, "gateway: UP — http://%s/mcp (%s mode)\n", report.Listen, report.Mode)
+	if ce := report.ConfigError; ce != nil {
+		fmt.Fprintf(w, "config invalid since %s: %s; still running the previous config\n", stamp(ce.Since), ce.Error)
+	}
 	fmt.Fprintf(w, "tools:   %d enabled / %d approved\n", report.Enabled, report.Approved)
 	for _, name := range sortedKeys(report.Backends) {
 		b := report.Backends[name]
@@ -625,6 +657,26 @@ func Status(ctx context.Context, path string, asJSON bool, w io.Writer) error {
 	}
 	return nil
 }
+
+// invalidMessage is one gateway's report that the config doesn't load and it
+// still serves the previous one.
+func invalidMessage(s config.Invalid) string {
+	where := "over stdio"
+	if s.Listen != "" {
+		where = "at http://" + s.Listen + "/mcp"
+	}
+	return fmt.Sprintf("config invalid since %s: %s; still running the previous config (gateway pid %d %s)",
+		stamp(s.Since), s.Err, s.PID, where)
+}
+
+func stillRunning(n int) string {
+	if n == 1 {
+		return "1 gateway is still running the previous config"
+	}
+	return fmt.Sprintf("%d gateways are still running the previous config", n)
+}
+
+func stamp(t time.Time) string { return t.Local().Format("2006-01-02 15:04:05 MST") }
 
 // printConfigStatus is the down-gateway view — everything knowable without
 // a live process: configured backends, gate counts, pending petitions, and
@@ -762,6 +814,7 @@ func Serve(ctx context.Context, path string, w io.Writer, stdio bool) error {
 		opts:  newOptions(tokens, callTimeout(f)),
 		token: f.Token, listen: f.Listen, auditLog: auditLog,
 		mode:        f.Mode,
+		stdio:       stdio,
 		ctx:         ctx,
 		dead:        make(chan deadSig, 8),
 		deadPending: map[string]deadSig{},
@@ -783,6 +836,7 @@ func Serve(ctx context.Context, path string, w io.Writer, stdio bool) error {
 	// Shutdown closes the LIVE pool, not the boot slice — sessions replaced
 	// by reconnects would otherwise leak their transport and watcher.
 	defer live.closeAll()
+	defer live.endInvalid()
 
 	if stdio {
 		srv := frontdoor.NewBare(res, sink, live.meta())
@@ -817,6 +871,42 @@ func Serve(ctx context.Context, path string, w io.Writer, stdio bool) error {
 	return nil
 }
 
+// noteInvalid records that the config on disk doesn't load and the previous
+// one keeps serving. The first failure sets the time; a later one replaces
+// the error. Callers hold l.mu.
+func (l *liveSet) noteInvalid(err error) {
+	if l.invalid == nil {
+		l.invalid = &config.Invalid{Since: time.Now()}
+		if !l.stdio {
+			l.invalid.Listen = l.listen
+		}
+	}
+	l.invalid.Err = err.Error()
+	var rerr error
+	if l.mark == nil {
+		l.mark, rerr = config.MarkInvalid(l.path, *l.invalid)
+	} else {
+		rerr = l.mark.Update(*l.invalid)
+	}
+	if rerr != nil {
+		slog.Default().Warn("status and doctor won't see the invalid config", "err", rerr)
+	}
+}
+
+// clearInvalid ends the record: the config loaded, or the gateway is
+// stopping. Callers hold l.mu.
+func (l *liveSet) clearInvalid() {
+	l.invalid = nil
+	l.mark.Clear()
+	l.mark = nil
+}
+
+func (l *liveSet) endInvalid() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.clearInvalid()
+}
+
 func toolCount(n int) string {
 	if n == 1 {
 		return "1 tool"
@@ -844,6 +934,13 @@ type liveSet struct {
 	// mode is refused.
 	token, listen, auditLog string
 	mode                    string
+	stdio                   bool
+
+	// invalid is set while the config on disk doesn't load and the
+	// previous one keeps serving; mark is this gateway's record of it,
+	// which status and doctor read. Both are guarded by mu.
+	invalid *config.Invalid
+	mark    *config.InvalidMark
 
 	// ctx is the gateway-lifetime context — session watchers and reconnect
 	// dials live as long as Serve does. Request contexts (which die with
@@ -882,19 +979,22 @@ type retryState struct {
 // watch polls the config file and hot-applies changes: unchanged backend
 // sessions are kept, added/changed/removed backends are re-dialed or
 // closed, and the tool surface is swapped in place — subscribed modern
-// clients and legacy stateful sessions get tools/list_changed. An unreadable
-// or invalid config keeps the current surface; the failure is logged and
-// audited. Saving config via any
-// toolhost command is atomic, so a torn file is only ever a hand-edit mid-
-// write — the next tick retries.
+// clients and legacy stateful sessions get tools/list_changed. An unreadable,
+// deleted or invalid config keeps the current surface: dropping every tool
+// on a typo would punish the user. The failure is logged and audited, and
+// status and doctor report it until the config loads again (noteInvalid).
+// Saving config via any toolhost command is atomic, so a torn file is only
+// ever a hand-edit mid-write — the next change retries.
 func (l *liveSet) watch(ctx context.Context) {
 	var mod time.Time
 	var size int64
 	if fi, err := os.Stat(l.path); err == nil {
 		mod, size = fi.ModTime(), fi.Size()
 	}
+	gone := false
 	tick := time.NewTicker(1500 * time.Millisecond)
 	defer tick.Stop()
+	defer l.endInvalid() // the gateway is stopping: it serves nothing now
 	for {
 		select {
 		case <-ctx.Done():
@@ -909,10 +1009,22 @@ func (l *liveSet) watch(ctx context.Context) {
 		case <-tick.C:
 		}
 		fi, err := os.Stat(l.path)
-		if err != nil || (fi.ModTime() == mod && fi.Size() == size) {
+		if err != nil {
+			// Deleted or unreadable: reload once, which keeps the current
+			// surface and records why, then wait for the file to return.
+			if !gone {
+				gone = true
+				l.reload()
+			} else {
+				l.retrySweep()
+			}
+			continue
+		}
+		if !gone && fi.ModTime() == mod && fi.Size() == size {
 			l.retrySweep()
 			continue
 		}
+		gone = false
 		mod, size = fi.ModTime(), fi.Size()
 		l.reload()
 	}
@@ -931,10 +1043,14 @@ func (l *liveSet) reload() {
 	if err != nil {
 		log.Warn("reload: invalid config — keeping current surface", "err", err)
 		l.sink.Record(core.Event{TS: time.Now(), Kind: core.EventReload, Err: err.Error()})
+		l.mu.Lock()
+		l.noteInvalid(err)
+		l.mu.Unlock()
 		return
 	}
 
 	l.mu.Lock()
+	l.clearInvalid()
 	reloadAudit := auditLogPath(f, l.path)
 	if f.Token != l.token || f.Listen != l.listen || reloadAudit != l.auditLog || f.Mode != l.mode {
 		fmt.Fprintln(l.w, "reload: listen/token/audit_log/mode changes take effect on restart — keeping current values")
@@ -1505,7 +1621,7 @@ func (l *liveSet) metaReport() any {
 			drifted = append(drifted, info.Qualified)
 		}
 	}
-	return map[string]any{
+	report := map[string]any{
 		"mode":      l.mode,
 		"listen":    l.listen,
 		"backends":  backends,
@@ -1514,6 +1630,10 @@ func (l *liveSet) metaReport() any {
 		"requested": reqs,
 		"drifted":   drifted,
 	}
+	if l.invalid != nil {
+		report["config_error"] = map[string]any{"since": l.invalid.Since, "error": l.invalid.Err}
+	}
+	return report
 }
 
 func (l *liveSet) metaStatus(name string) (core.ToolInfo, bool) {

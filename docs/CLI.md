@@ -155,6 +155,11 @@ toolhost doctor                # check the install; no running gateway needed
   a URL's host and port accept a connection), each OAuth server has a
   stored grant, and whether the service is installed. Any ✗ exits 1, so
   scripts can gate on it.
+- While a running gateway can't load the config, `status` and `doctor`
+  say `config invalid since <time>: <error>; still running the previous
+  config`, and `doctor` exits 1 until the config loads again. This holds
+  even when the file no longer parses, so neither command can read the
+  gateway's address from it.
 
 - The MCP server entry name is `local-gateway` at every scope — a
   project entry shadows a user one. Entries under other names are never
