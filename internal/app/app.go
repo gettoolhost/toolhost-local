@@ -1324,6 +1324,7 @@ func (l *liveSet) catalog() []core.ToolInfo {
 			}
 			pin := f.ApprovedSchemas[q]
 			drifted := approved[q] && pin != "" && pin != core.SchemaHash(t)
+			denyReason, isDenied := denied[q] // a denial may carry no reason
 			out = append(out, core.ToolInfo{
 				Qualified:    q,
 				Description:  t.Description,
@@ -1331,8 +1332,8 @@ func (l *liveSet) catalog() []core.ToolInfo {
 				Enabled:      approved[q] && !drifted && (!hasEn || enSet[q]),
 				Requested:    requested[q],
 				Drifted:      drifted,
-				Denied:       denied[q] != "",
-				DeniedReason: denied[q],
+				Denied:       isDenied,
+				DeniedReason: denyReason,
 			})
 		}
 	}
