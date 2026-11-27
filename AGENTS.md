@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Toolhost OSS kernel — one governed MCP front door. Pure Go module
+ToolHost Local kernel — one MCP front door, approved tools only. Pure Go module
 (`github.com/gettoolhost/toolhost-local`, go 1.26.2), no database, no JS,
 no monorepo.
 
