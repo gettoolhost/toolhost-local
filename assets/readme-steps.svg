@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 460" width="1240" height="460" role="img" aria-labelledby="t d">
+  <title id="t">Discovered, approved, enabled</title>
+  <desc id="d">A tool reaches your agent only after three steps. The server discovers it, you approve it with its schema pinned, and you or the agent enable it from the approved set. If the schema changes, the tool drops off until you approve it again.</desc>
+  <defs>
+    <style>
+      .sans { font-family: 'Space Grotesk', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif; }
+      .mono { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    </style>
+    <marker id="head" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#07110e"/>
+    </marker>
+  </defs>
+
+  <rect width="1240" height="460" fill="#eaf2df"/>
+  <text x="48" y="70" class="sans" font-size="30" font-weight="700" fill="#07110e">Discovered, approved, enabled</text>
+  <text x="48" y="102" class="sans" font-size="17" fill="#1e4431">A tool reaches your agent only after all three. You own the middle one.</text>
+
+  <!-- 1 discovered -->
+  <rect x="56" y="140" width="340" height="210" fill="#07110e"/>
+  <rect x="48" y="132" width="340" height="210" fill="#f5f9ef" stroke="#07110e" stroke-width="3"/>
+  <text x="72" y="166" class="mono" font-size="13" letter-spacing="1.5" fill="#2b5e44">1 · DISCOVERED</text>
+  <text x="72" y="196" class="sans" font-size="16" fill="#1e4431">The server lists it.</text>
+  <text x="72" y="272" class="sans" font-size="64" font-weight="700" fill="#07110e">16</text>
+  <text x="72" y="318" class="sans" font-size="15" fill="#2b5e44">In the catalogue. Not callable.</text>
+
+  <line x1="396" y1="237" x2="442" y2="237" stroke="#07110e" stroke-width="3" marker-end="url(#head)"/>
+
+  <!-- 2 approved: the human step carries the signal colour -->
+  <rect x="458" y="140" width="340" height="210" fill="#07110e"/>
+  <rect x="450" y="132" width="340" height="210" fill="#d1ff69" stroke="#07110e" stroke-width="3"/>
+  <text x="474" y="166" class="mono" font-size="13" letter-spacing="1.5" fill="#07110e">2 · APPROVED</text>
+  <text x="474" y="196" class="sans" font-size="16" fill="#07110e">You run toolhost approve.</text>
+  <text x="474" y="272" class="sans" font-size="64" font-weight="700" fill="#07110e">2</text>
+  <text x="474" y="318" class="mono" font-size="14" fill="#07110e">pinned: sha256 of its schema</text>
+
+  <line x1="798" y1="237" x2="844" y2="237" stroke="#07110e" stroke-width="3" marker-end="url(#head)"/>
+
+  <!-- 3 enabled -->
+  <rect x="860" y="140" width="340" height="210" fill="#07110e"/>
+  <rect x="852" y="132" width="340" height="210" fill="#f5f9ef" stroke="#07110e" stroke-width="3"/>
+  <text x="876" y="166" class="mono" font-size="13" letter-spacing="1.5" fill="#2b5e44">3 · ENABLED</text>
+  <text x="876" y="196" class="sans" font-size="16" fill="#1e4431">You or the agent, from the approved set.</text>
+  <text x="876" y="272" class="sans" font-size="64" font-weight="700" fill="#07110e">2</text>
+  <text x="876" y="318" class="sans" font-size="15" fill="#2b5e44">On the agent's list. Callable.</text>
+
+  <!-- drift strip -->
+  <rect x="48" y="378" width="1144" height="50" fill="#07110e"/>
+  <text x="72" y="410" class="sans" font-size="17" fill="#eaf2df">Schema changed since you approved it?
+    <tspan fill="#d1ff69" font-weight="700">The tool drops off the list until you approve it again.</tspan></text>
+</svg>

@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 580" width="1240" height="580" role="img" aria-labelledby="t d">
+  <title id="t">ToolHost Local: the tools you chose, as you chose them</title>
+  <desc id="d">An agent connects to ToolHost Local, which connects to a filesystem MCP server with 16 tools. Two are approved, so the agent's tool list holds 2 tools plus 5 gateway verbs: 4.9 KB instead of 19.4 KB.</desc>
+  <defs>
+    <style>
+      .sans { font-family: 'Space Grotesk', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif; }
+      .mono { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    </style>
+    <marker id="head" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#07110e"/>
+    </marker>
+  </defs>
+
+  <rect width="1240" height="580" fill="#eaf2df"/>
+
+  <text x="48" y="74" class="sans" font-size="34" font-weight="700" fill="#07110e">The tools you chose, as you chose them.</text>
+  <text x="48" y="108" class="sans" font-size="18" fill="#1e4431">One local MCP endpoint between your agents and your servers.</text>
+
+  <!-- Agent -->
+  <rect x="56" y="158" width="300" height="320" fill="#07110e"/>
+  <rect x="48" y="150" width="300" height="320" fill="#f5f9ef" stroke="#07110e" stroke-width="3"/>
+  <text x="72" y="184" class="mono" font-size="13" letter-spacing="1.5" fill="#2b5e44">AGENT</text>
+  <text x="72" y="214" class="sans" font-size="22" font-weight="700" fill="#07110e">Your agent</text>
+  <text x="72" y="248" class="mono" font-size="14" fill="#1e4431">tools/list</text>
+  <rect x="72" y="262" width="252" height="34" fill="#d1ff69" stroke="#07110e" stroke-width="2"/>
+  <text x="84" y="284" class="mono" font-size="15" fill="#07110e">fs__read_text_file</text>
+  <rect x="72" y="304" width="252" height="34" fill="#d1ff69" stroke="#07110e" stroke-width="2"/>
+  <text x="84" y="326" class="mono" font-size="15" fill="#07110e">fs__list_directory</text>
+  <text x="72" y="366" class="mono" font-size="14" fill="#2b5e44">+ 5 gateway__ verbs</text>
+  <text x="72" y="450" class="sans" font-size="22" font-weight="700" fill="#07110e">7 tools · 4.9 KB</text>
+
+  <!-- arrows -->
+  <line x1="360" y1="310" x2="402" y2="310" stroke="#07110e" stroke-width="3" marker-end="url(#head)"/>
+  <line x1="722" y1="310" x2="764" y2="310" stroke="#07110e" stroke-width="3" marker-end="url(#head)"/>
+
+  <!-- Gateway -->
+  <rect x="418" y="158" width="300" height="320" fill="#1e4431"/>
+  <rect x="410" y="150" width="300" height="320" fill="#07110e" stroke="#07110e" stroke-width="3"/>
+  <rect x="434" y="172" width="28" height="28" fill="#07110e" stroke="#d1ff69" stroke-width="2"/>
+  <rect x="438" y="176" width="20" height="20" fill="#d1ff69"/>
+  <rect x="449" y="187" width="6" height="6" fill="#07110e"/>
+  <text x="474" y="194" class="sans" font-size="22" font-weight="700" fill="#eaf2df">ToolHost Local</text>
+  <text x="434" y="234" class="mono" font-size="14" fill="#d1ff69">127.0.0.1:8080/mcp</text>
+  <text x="434" y="280" class="sans" font-size="17" font-weight="700" fill="#d1ff69">Exact</text>
+  <text x="434" y="302" class="sans" font-size="15" fill="#eaf2df">approved tools only</text>
+  <text x="434" y="338" class="sans" font-size="17" font-weight="700" fill="#d1ff69">Held</text>
+  <text x="434" y="360" class="sans" font-size="15" fill="#eaf2df">pinned to the schema you saw</text>
+  <text x="434" y="396" class="sans" font-size="17" font-weight="700" fill="#d1ff69">Honest</text>
+  <text x="434" y="418" class="sans" font-size="15" fill="#eaf2df">every call in the audit log</text>
+  <text x="434" y="452" class="mono" font-size="13" fill="#eaf2df" opacity="0.75">one binary · no database</text>
+
+  <!-- Server -->
+  <rect x="780" y="158" width="420" height="320" fill="#07110e"/>
+  <rect x="772" y="150" width="420" height="320" fill="#f5f9ef" stroke="#07110e" stroke-width="3"/>
+  <text x="796" y="184" class="mono" font-size="13" letter-spacing="1.5" fill="#2b5e44">MCP SERVER</text>
+  <text x="796" y="214" class="sans" font-size="22" font-weight="700" fill="#07110e">filesystem</text>
+  <text x="796" y="248" class="mono" font-size="14" fill="#1e4431">16 tools discovered</text>
+  <g class="mono" font-size="12" fill="#2b5e44">
+    <text x="796" y="274">read_file</text>
+    <rect x="790" y="281" width="114" height="20" fill="#d1ff69" stroke="#07110e" stroke-width="1.5"/>
+    <text x="796" y="295" fill="#07110e">read_text_file</text>
+    <text x="796" y="316">read_media_file</text>
+    <text x="796" y="337">read_multiple_files</text>
+    <text x="796" y="358">write_file</text>
+    <text x="796" y="379">append_file</text>
+    <text x="796" y="400">edit_file</text>
+    <text x="796" y="421">create_directory</text>
+    <rect x="984" y="260" width="114" height="20" fill="#d1ff69" stroke="#07110e" stroke-width="1.5"/>
+    <text x="990" y="274" fill="#07110e">list_directory</text>
+    <text x="990" y="295">list_directory_with_sizes</text>
+    <text x="990" y="316">directory_tree</text>
+    <text x="990" y="337">move_file</text>
+    <text x="990" y="358">copy_file</text>
+    <text x="990" y="379">search_files</text>
+    <text x="990" y="400">get_file_info</text>
+    <text x="990" y="421">list_allowed_directories</text>
+  </g>
+  <text x="796" y="450" class="sans" font-size="22" font-weight="700" fill="#07110e">16 tools · 19.4 KB</text>
+
+  <text x="48" y="526" class="sans" font-size="14" fill="#1e4431">Measured with @modelcontextprotocol/server-filesystem: 16 tools discovered, 2 approved. Sizes are the tools/list</text>
+  <text x="48" y="548" class="sans" font-size="14" fill="#1e4431">tool definitions as serialised JSON. The other 14 tools are not registered, so the agent cannot call them.</text>
+</svg>
