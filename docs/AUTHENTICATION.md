@@ -30,6 +30,10 @@ Two directions, kept apart:
   the stored grant — they never open a browser; a missing grant fails
   with the remedy.
 - `toolhost mcp logout <backend>` drops the stored grant.
+- Credentials stay on the configured origin. Static `headers` and `bearer`
+  go only to the backend URL's scheme, host and port; a redirect to any
+  other origin is refused, with both origins named. Configure the final
+  URL instead.
 
 ## stdio backend environment
 

@@ -11,6 +11,7 @@ package upstream
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -254,6 +255,23 @@ func stdioEnv(cfg *config.Backend) []string {
 	return out
 }
 
+// originOf is scheme://host:port, lowercased, with the default port made
+// explicit — "https://h" and "https://h:443" are one origin; http and https
+// on the same host are two.
+func originOf(u *url.URL) string {
+	scheme := strings.ToLower(u.Scheme)
+	port := u.Port()
+	if port == "" {
+		switch scheme {
+		case "https":
+			port = "443"
+		case "http":
+			port = "80"
+		}
+	}
+	return scheme + "://" + strings.ToLower(u.Hostname()) + ":" + port
+}
+
 func validateHTTPURL(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
@@ -273,22 +291,51 @@ func baseClient(cfg *config.Backend) *http.Client {
 	if cfg.Auth != nil && cfg.Auth.Type == "bearer" && cfg.Auth.Token != "" {
 		headers["Authorization"] = "Bearer " + cfg.Auth.Token
 	}
-	return &http.Client{Transport: headerTransport{base: http.DefaultTransport, headers: headers}}
+	return credClient(newHeaderTransport(cfg.URL, headers))
+}
+
+// credClient is the only way a credential-carrying client is built: it
+// refuses any redirect that leaves the origin the request was sent to.
+func credClient(rt http.RoundTripper) *http.Client {
+	return &http.Client{Transport: rt, CheckRedirect: sameOriginRedirects}
+}
+
+// sameOriginRedirects refuses a redirect to another origin instead of
+// following it. Credentials here are attached by transports on every hop —
+// static headers by headerTransport, OAuth bearers by oauth2.Transport — so
+// net/http's own cross-origin Authorization strip can't protect them: a
+// followed redirect would hand them to whatever host, port or plain-http
+// URL the redirect names. A changed scheme, host or port fails the request.
+func sameOriginRedirects(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	if from, to := originOf(via[0].URL), originOf(req.URL); from != to {
+		return fmt.Errorf("refused redirect from %s to %s: upstream credentials never follow a redirect to another origin — configure the final URL instead", from, to)
+	}
+	return nil
 }
 
 // sseClient builds the HTTP client for an SSE backend, resolving auth the
 // SDK can't: client_credentials drives its own grant against the probed 401,
 // oauth reuses the stored grant (or points at `toolhost auth`).
 func sseClient(ctx context.Context, name string, cfg *config.Backend, opts *Options) (*http.Client, error) {
-	base := headerTransport{base: http.DefaultTransport, headers: cfg.Headers}
-	plain := &http.Client{Transport: base}
+	// Every SSE request goes through the origin guard: the server's
+	// endpoint event can name any URL, and nothing may follow it elsewhere.
+	origin := ""
+	if u, err := url.Parse(cfg.URL); err == nil && u.Host != "" {
+		origin = originOf(u)
+	}
+	guarded := func(rt http.RoundTripper) *http.Client { return credClient(originGuard{origin: origin, next: rt}) }
+	base := newHeaderTransport(cfg.URL, cfg.Headers)
+	plain := guarded(base)
 
 	if cfg.Auth == nil {
 		return plain, nil
 	}
 	switch cfg.Auth.Type {
 	case "", "none", "bearer":
-		return baseClient(cfg), nil
+		return guarded(baseClient(cfg).Transport), nil
 
 	case "client_credentials":
 		h, err := oauth.NewHandler(ctx, name, cfg.Auth, opts.Tokens, false, opts.OpenURL, opts.Out)
@@ -302,7 +349,7 @@ func sseClient(ctx context.Context, name string, cfg *config.Backend, opts *Opti
 		if err != nil {
 			return nil, err
 		}
-		return &http.Client{Transport: &oauth2.Transport{Source: ts, Base: base}}, nil
+		return guarded(&oauth2.Transport{Source: ts, Base: base}), nil
 
 	case "oauth":
 		if opts.Tokens == nil {
@@ -312,16 +359,46 @@ func sseClient(ctx context.Context, name string, cfg *config.Backend, opts *Opti
 		if ts == nil {
 			return nil, fmt.Errorf("backend %q needs an OAuth grant — run: toolhost auth %s", name, name)
 		}
-		return &http.Client{Transport: &oauth2.Transport{Source: ts, Base: base}}, nil
+		return guarded(&oauth2.Transport{Source: ts, Base: base}), nil
 	}
 	return plain, nil
 }
 
+// originGuard refuses any request to an origin other than the backend's
+// configured one. An SSE server names the URL its client POSTs to, and
+// that URL may point anywhere: neither credentials nor tool arguments
+// follow it off the configured origin.
+type originGuard struct {
+	origin string // originOf the configured URL; "" refuses everything
+	next   http.RoundTripper
+}
+
+func (g originGuard) RoundTrip(req *http.Request) (*http.Response, error) {
+	if to := originOf(req.URL); g.origin == "" || to != g.origin {
+		if req.Body != nil {
+			req.Body.Close()
+		}
+		return nil, fmt.Errorf("refused request to %s: the backend is configured at %s, and the gateway sends nothing to another origin", to, g.origin)
+	}
+	return g.next.RoundTrip(req)
+}
+
 // headerTransport injects per-backend static headers (e.g. an upstream API
-// key) on every request the MCP client makes.
+// key) on requests to the backend's own origin. Anything the client sends
+// elsewhere — the SDK's OAuth discovery hop to an authorization server, say
+// — goes without them. An empty origin (an unparseable URL) injects nothing.
 type headerTransport struct {
 	base    http.RoundTripper
 	headers map[string]string
+	origin  string
+}
+
+func newHeaderTransport(rawURL string, headers map[string]string) headerTransport {
+	t := headerTransport{base: http.DefaultTransport, headers: headers}
+	if u, err := url.Parse(rawURL); err == nil && u.Host != "" {
+		t.origin = originOf(u)
+	}
+	return t
 }
 
 func (t headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -329,7 +406,7 @@ func (t headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	if len(t.headers) == 0 {
+	if len(t.headers) == 0 || t.origin == "" || originOf(req.URL) != t.origin {
 		return base.RoundTrip(req)
 	}
 	clone := req.Clone(req.Context())
