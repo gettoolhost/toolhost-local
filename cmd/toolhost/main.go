@@ -25,7 +25,11 @@ func main() {
 	if len(os.Args) < 2 {
 		// Bare toolhost is adaptive: no env → the golden path; an env → status.
 		if _, statErr := os.Stat(config.DefaultPath("")); statErr == nil {
-			_ = app.Status(context.Background(), config.DefaultPath(""), false, os.Stdout)
+			// A config that doesn't load is an error here too, not silence.
+			if err := app.Status(context.Background(), config.DefaultPath(""), false, os.Stdout); err != nil {
+				fmt.Fprintln(os.Stderr, "toolhost:", err)
+				os.Exit(1)
+			}
 		} else {
 			fmt.Fprint(os.Stdout, goldenPath)
 			os.Exit(2)
