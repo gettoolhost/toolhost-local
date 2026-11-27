@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gettoolhost/toolhost-local/internal/config"
@@ -96,25 +98,53 @@ func listRequests(path string, all, asJSON bool, w io.Writer) error {
 		if r.Denied {
 			mark = "✗"
 		}
-		spec := ""
+		fmt.Fprintf(w, "%s %-6s %-32s %s\n", mark, kind, printable(r.Name), age(r.At))
+		// Accepting a server petition writes this spec into config, where
+		// the gateway runs or dials it — show every field it carries, never
+		// a summary. A spec carrying both is refused at --accept.
 		if kind == config.RequestServer {
 			if r.URL != "" {
-				spec = " · " + r.URL
-			} else if r.Command != "" {
-				spec = " · " + r.Command
+				fmt.Fprintf(w, "        url:    %s: %s\n", printable(r.Transport), printable(r.URL))
+			}
+			if r.Command != "" || len(r.Args) > 0 {
+				fmt.Fprintf(w, "        runs:   %s: %s\n", printable(r.Transport), quoteArgv(append([]string{r.Command}, r.Args...)))
 			}
 		}
-		fmt.Fprintf(w, "%s %-6s %-32s %s%s\n", mark, kind, r.Name, age(r.At), spec)
 		if r.Reason != "" {
-			fmt.Fprintf(w, "        reason: %s\n", r.Reason)
+			fmt.Fprintf(w, "        reason: %s\n", printable(r.Reason))
 		}
 		if r.Denied && r.DenyReason != "" {
-			fmt.Fprintf(w, "        denied: %s\n", r.DenyReason)
+			fmt.Fprintf(w, "        denied: %s\n", printable(r.DenyReason))
 		}
 	}
 	fmt.Fprintln(w, "\ngrant:  toolhost requests --accept <name>")
 	fmt.Fprintln(w, "deny:   toolhost requests --deny <name> --reason …")
 	return nil
+}
+
+// printable renders agent-supplied text for the terminal: as it is when every
+// character is printable, in Go quotes otherwise, so a newline or an
+// escape sequence can't forge a line of the review.
+func printable(s string) string {
+	if strings.ContainsFunc(s, func(r rune) bool { return !strconv.IsPrint(r) }) {
+		return strconv.Quote(s)
+	}
+	return s
+}
+
+// quoteArgv renders a command line for a human to approve: plain tokens as
+// they are, anything empty, spaced, shell-special or non-printable in Go
+// quotes, so every argument's exact bytes are visible.
+func quoteArgv(argv []string) string {
+	out := make([]string, len(argv))
+	for i, a := range argv {
+		if a == "" || strings.ContainsAny(a, " \t\n\r\"'\\$`;&|<>()*?[]{}~#!") || strconv.Quote(a) != `"`+a+`"` {
+			out[i] = strconv.Quote(a)
+		} else {
+			out[i] = a
+		}
+	}
+	return strings.Join(out, " ")
 }
 
 // acceptRequest grants one petition. Tool kind → the normal approve path
@@ -136,6 +166,9 @@ func acceptRequest(ctx context.Context, path, name string, w io.Writer) error {
 		return fmt.Errorf("no pending petition %q", name)
 	}
 	if r.Kind == config.RequestServer {
+		if err := config.CheckServerSpec(*r); err != nil {
+			return fmt.Errorf("%w — deny it: toolhost requests --deny %s", err, name)
+		}
 		f, err := config.Load(path)
 		if err != nil {
 			return err

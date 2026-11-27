@@ -467,6 +467,9 @@ func appendRequests(reqs []Request, approved map[string]bool, reason string, nam
 // materializes it into config on --accept. Name collisions with existing
 // backends or denied proposals refuse.
 func AppendServerRequest(cfgPath string, f *File, r Request) error {
+	if err := CheckServerSpec(r); err != nil {
+		return err
+	}
 	if err := f.validateBackend(r.Name, &Backend{
 		Transport: r.Transport, Command: r.Command, Args: r.Args, URL: r.URL,
 	}); err != nil {
@@ -576,6 +579,20 @@ func RequestSet(reqs []Request) map[string]bool {
 		}
 	}
 	return set
+}
+
+// CheckServerSpec refuses a server petition that carries both a command
+// and a URL. Such a spec could show the human one thing and run another:
+// a stdio backend runs its command and ignores its URL.
+func CheckServerSpec(r Request) error {
+	hasCommand := r.Command != "" || len(r.Args) > 0
+	switch {
+	case r.Transport == "stdio" && r.URL != "":
+		return fmt.Errorf("server %q: a stdio petition runs a command, so it can't also carry a url", r.Name)
+	case r.Transport != "stdio" && hasCommand:
+		return fmt.Errorf("server %q: a %s petition dials a url, so it can't also carry a command or args", r.Name, r.Transport)
+	}
+	return nil
 }
 
 func (f *File) applyDefaults() {
