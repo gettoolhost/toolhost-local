@@ -7,7 +7,7 @@
 <p align="center">
   <b>The tools you chose, as you chose them.</b><br>
   A local MCP gateway. Your agents connect to one endpoint and see only the tools you approved,<br>
-  pinned to the schema you reviewed, with a log of its tool calls, refused ones included.
+  pinned to the schema you reviewed, with a log of their tool calls, refused ones included.
 </p>
 
 <p align="center">
