@@ -92,7 +92,7 @@ retries. Every drop and reconnect is audited (`backend_error` /
 |---|---|
 | `toolhost.json` | config — policy; lives in the env (home or project dir for `--shared`) |
 | `toolhost_tokens.json` | upstream OAuth grants (state dir) |
-| `toolhost_audit.jsonl` | append-only evidence (state dir) |
+| `toolhost_audit.jsonl` | the audit log, best-effort and rotated at `audit_max_mb` (state dir) |
 | `toolhost_requests.json` | pending agent requests (state dir) |
 | `~/.toolhost/locks/*.lock` | write locks, one per config or request queue, keyed by the file's real path; empty, safe to leave |
 | `toolhost_serve.log` | service-mode stdout/stderr (beside config) |

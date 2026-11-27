@@ -7,7 +7,7 @@
 <p align="center">
   <b>The tools you chose, as you chose them.</b><br>
   A local MCP gateway. Your agents connect to one endpoint and see only the tools you approved,<br>
-  pinned to the schema you reviewed, with a record of every call.
+  pinned to the schema you reviewed, with a log of its tool calls, refused ones included.
 </p>
 
 <p align="center">
@@ -124,7 +124,7 @@ deny:   toolhost requests --deny <name> --reason …
 
 **Held.** `toolhost approve` records a SHA-256 of each tool's input and output schema. If a server later changes that schema, the tool leaves the list and `gateway__call` says why. It stays off until you approve the new schema. The pin covers the schemas only: a changed description or annotation doesn't hold the tool.
 
-**Honest.** Every call that runs, every refused call (direct or through `gateway__call`), every failed key check, every enable, disable or request from the agent, and every reload is appended to a JSONL audit log. Records carry the tool, timing and error. They never carry arguments or results.
+**Honest.** Calls that run, refused calls (direct or through `gateway__call`), failed key checks, the agent's enables, disables and requests, and reloads are appended to a JSONL audit log. Records carry the tool, timing and error, never arguments or results. The log is best-effort: if a write fails, that record is lost and the call goes ahead. Past `audit_max_mb` (10 MiB by default) the file moves to `.1`, replacing the previous one.
 
 ```console
 $ toolhost audit -n 3

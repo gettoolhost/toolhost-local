@@ -75,13 +75,16 @@ cannot add servers — a server petition is a proposal, not an entry.
 
 ## Audit
 
-Every governed action appends one JSON object to `audit_log` (`0600`).
-Event: `{ts, kind, backend, tool, ms, err, remote}`.
+Each action below appends one JSON object to `audit_log` (`0600`).
+Event: `{ts, kind, backend, tool, ms, err, remote}`. Best-effort: a write
+that fails loses that record, and the call goes ahead. Past
+`audit_max_mb` the file moves to `<audit_log>.1`, replacing the previous
+one. A request refused for its `Origin` or `Host` is not recorded.
 
 | kind | emitted on |
 |---|---|
 | `tool_call` | every dispatched call, with `ms`; `err` set on failure |
-| `auth_failed` | bad/missing bearer on `/mcp`, with `remote` |
+| `auth_failed` | bad/missing bearer on `/mcp` or `/status`, with `remote` |
 | `tool_forbidden` | call to a non-enabled name |
 | `govern` | agent-initiated enable/disable/request |
 | `backend_error` | unreachable backend, skipped unsafe names, lost sessions |
