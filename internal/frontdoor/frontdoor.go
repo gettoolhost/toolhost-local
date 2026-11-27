@@ -8,7 +8,10 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -75,8 +78,7 @@ type Meta struct {
 // subscriptions/listen; older clients served sessionlessly cannot. The
 // gateway__* meta-tools are the pull-based path. Stateful is the compat
 // opt-in for older clients that must hold a session for pushed list changes.
-// DNS rebinding protection stays on either way (SDK default: non-localhost
-// Host headers on localhost addresses get 403).
+// Origin and DNS rebinding checks cover every route either way (localOnly).
 type Options struct {
 	Stateless bool
 }
@@ -95,7 +97,7 @@ func New(res *core.Resolution, token string, sink core.AuditSink, meta *Meta, op
 	}, &mcp.StreamableHTTPOptions{Stateless: opts != nil && opts.Stateless})
 
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", bearer(token, sink, mcpHandler))
+	mux.Handle("/mcp", bearer(token, s.sink, mcpHandler))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
@@ -104,7 +106,7 @@ func New(res *core.Resolution, token string, sink core.AuditSink, meta *Meta, op
 		// GET /status is the admin read: the CLI's live view and the
 		// harness's polling surface. An HTTP endpoint, not a tool — the
 		// agent's tools/list stays pure capability.
-		mux.Handle("GET /status", bearer(token, sink, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mux.Handle("GET /status", bearer(token, s.sink, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			raw, err := json.Marshal(meta.Report())
 			if err != nil {
@@ -114,9 +116,56 @@ func New(res *core.Resolution, token string, sink core.AuditSink, meta *Meta, op
 			_, _ = w.Write(raw)
 		})))
 	}
-	s.handler = mux
+	s.handler = localOnly(mux)
 
 	return s, nil
+}
+
+// localOnly runs before routing and before the bearer check, on every route.
+// The spec requires servers to validate Origin and answer 403 when it is
+// present and invalid; for a gateway on this machine, only loopback origins
+// are valid, so a page on any other site (or an opaque "null" origin) is
+// refused. Clients that aren't browsers send no Origin and pass. On a
+// loopback listener, a Host that isn't loopback means a DNS-rebound name, so
+// it is refused too — the SDK checks that on /mcp only.
+func localOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if origin := r.Header.Get("Origin"); origin != "" && !loopbackOrigin(origin) {
+			http.Error(w, fmt.Sprintf("Forbidden: origin %q is not on this machine", origin), http.StatusForbidden)
+			return
+		}
+		if local, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr); ok && local != nil &&
+			loopbackHost(local.String()) && !loopbackHost(r.Host) {
+			http.Error(w, fmt.Sprintf("Forbidden: invalid Host header %q", r.Host), http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// loopbackOrigin reports whether an Origin header names an http(s) origin
+// on a loopback host. Anything else, "null" included, is foreign.
+func loopbackOrigin(origin string) bool {
+	u, err := url.Parse(origin)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return false
+	}
+	return loopbackHost(u.Host)
+}
+
+// loopbackHost reports whether host, with or without a port, is localhost
+// or a loopback IP.
+func loopbackHost(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip, err := netip.ParseAddr(host)
+	return err == nil && ip.IsLoopback()
 }
 
 // NewBare builds the governed surface with no HTTP wiring — for the stdio

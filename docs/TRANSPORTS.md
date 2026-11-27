@@ -14,9 +14,10 @@
 - 2026-07-28 clients can opt in to pushed `tools/list_changed` through
   `subscriptions/listen`. Older clients in stateless mode have no held
   session for push. The meta-tools provide a pull-based path in either case.
-- Bearer auth gates `/mcp` in both HTTP modes; `/healthz` is open.
-  DNS-rebinding protection stays on (SDK default). `mode` changes need a
-  restart.
+- Bearer auth gates `/mcp` and `/status` in both HTTP modes; `/healthz`
+  needs no key. Before any of that, every route answers 403 to an `Origin`
+  that isn't local and, on a loopback connection, to a `Host` that isn't
+  local (DNS rebinding). `mode` changes need a restart.
 - stdio: stdout is protocol-only, status lines go to stderr. Reloads
   still land — `list_changed` travels as a notification.
 

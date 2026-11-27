@@ -51,10 +51,12 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-  request["Request"] --> bearer["Bearer check"] --> dispatch["Registered dispatch<br/>closure"] --> call["upstream.Call<br/>deadline + cancel<br/>no ctx values"] --> audit["Audit record"] --> response["Response"]
+  request["Request"] --> local["Origin + Host check"] --> bearer["Bearer check"] --> dispatch["Registered dispatch<br/>closure"] --> call["upstream.Call<br/>deadline + cancel<br/>no ctx values"] --> audit["Audit record"] --> response["Response"]
+  local -->|foreign| forbidden["403"]
   bearer -->|denied| failure["auth_failed audit"]
 ```
 
+- Every HTTP route first refuses, with 403, an `Origin` that isn't a loopback origin and, on a loopback connection, a `Host` that isn't loopback (DNS rebinding). Clients that aren't browsers send no `Origin`.
 - The front door registers only `core.Resolve` output. Each handler closes over its upstream and original tool name; an invisible tool has no handler.
 - `upstream.Call` detaches request context values while preserving deadline and cancellation, then applies `call_timeout` (default `60s`, per-backend override).
 

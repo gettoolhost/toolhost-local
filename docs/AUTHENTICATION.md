@@ -7,8 +7,11 @@ Two directions, kept apart:
 
 ## Downstream: the bearer token
 
-- `Authorization: Bearer <token>` on every `/mcp` request; constant-time
-  compared; denials audited as `auth_failed` with the remote address.
+- `Authorization: Bearer <token>` on every `/mcp` and `/status` request;
+  constant-time compared; denials audited as `auth_failed` with the remote
+  address.
+- Checked first, before the key: a request whose `Origin` isn't local, or
+  whose `Host` isn't local on a loopback connection, gets 403.
 - Minted by `toolhost init` (`th_` + 24 random bytes, hex).
 - `serve --stdio` has no bearer — the spawning process owns the pipe.
 - Store it as an `env:` ref (`"token": "env:TOOLHOST_TOKEN"`) if the
