@@ -10,8 +10,9 @@ else nearest scope wins: this folder's private env
 → `~/.toolhost/toolhost.json` (`$TOOLHOST_HOME` relocates the home).
 
 Everything sensitive lives in `~/.toolhost/` — credentials, OAuth grants,
-audit logs, and the agent request queue. A project folder never gains a
-toolhost file unless `init --shared` made one on purpose.
+audit logs, and the agent request queue. A project folder gains files
+only when you ask: `init --shared` writes `./.toolhost/`, and
+`attach --project` writes the client's project file.
 
 ## The path
 
@@ -145,7 +146,15 @@ toolhost attach <client>       # write the local-gateway entry (user scope)
 toolhost attach --project <client>   # this folder's file — tokenless stdio spawn
         --stdio · --print · --dry-run
 toolhost install | uninstall   # launchd (macOS) / systemd --user service
+toolhost doctor                # check the install; no running gateway needed
 ```
+
+- `doctor` prints one line per check: the config parses, the key
+  resolves, the listen address (free, already serving, or invalid), the
+  audit directory is writable, each server (a stdio command is on `PATH`;
+  a URL's host and port accept a connection), each OAuth server has a
+  stored grant, and whether the service is installed. Any ✗ exits 1, so
+  scripts can gate on it.
 
 - The MCP server entry name is `local-gateway` at every scope — a
   project entry shadows a user one. Entries under other names are never
