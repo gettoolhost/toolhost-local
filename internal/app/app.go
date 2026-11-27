@@ -210,24 +210,30 @@ func EditApprovals(ctx context.Context, path string, names []string, approve, dr
 	if err != nil {
 		return err
 	}
-	var changed []string
+	// Pinning dials the backends, which can take seconds. Dial against
+	// this read, then apply the change to a fresh read under the config
+	// lock, so an edit made meanwhile (a revoke, an agent's enable) stays.
 	var pins map[string]string
 	if approve {
-		var err error
 		if pins, err = schemaPins(ctx, f, path, names); err != nil {
 			return err
 		}
-		if changed, err = f.Approve(pins); err != nil {
-			return err
-		}
-	} else {
-		changed = f.Revoke(names...)
 	}
-	if len(changed) == 0 {
-		fmt.Fprintln(w, "no change")
-		return nil
+	edit := func(f *config.File) ([]string, error) {
+		if approve {
+			return f.Approve(pins)
+		}
+		return f.Revoke(names...), nil
 	}
 	if dryRun {
+		changed, err := edit(f)
+		if err != nil {
+			return err
+		}
+		if len(changed) == 0 {
+			fmt.Fprintln(w, "no change")
+			return nil
+		}
 		verb := "approve"
 		if !approve {
 			verb = "revoke"
@@ -241,8 +247,18 @@ func EditApprovals(ctx context.Context, path string, names []string, approve, dr
 		}
 		return nil
 	}
-	if err := f.Save(path); err != nil {
+	var changed []string
+	f, err = config.Update(path, func(f *config.File) error {
+		var err error
+		changed, err = edit(f)
 		return err
+	})
+	if err != nil {
+		return err
+	}
+	if len(changed) == 0 {
+		fmt.Fprintln(w, "no change")
+		return nil
 	}
 	if approve {
 		config.RemoveAnsweredRequests(path, f.ApprovedSet())
@@ -1358,20 +1374,18 @@ func (l *liveSet) metaDiscover(_ context.Context, query, scope string) ([]core.T
 
 // metaEnable is the agent-facing enable: same gate as the CLI (approved
 // only), same file, then an immediate reload so the surface reflects it.
-// l.mu serializes the load→save pair against other config writers; the
-// reload runs AFTER unlock — it manages its own locking and holding it
+// config.Update locks the file against other processes (the CLI, a second
+// gateway); l.mu serializes this process's writers. The reload runs AFTER
+// unlock — it manages its own locking and holding it
 // here would deadlock.
 func (l *liveSet) metaEnable(ctx context.Context, names []string) ([]string, error) {
 	l.mu.Lock()
-	f, err := config.Load(l.path)
-	if err != nil {
-		l.mu.Unlock()
-		return nil, err
-	}
-	changed, err := f.Enable(names...)
-	if err == nil {
-		err = f.Save(l.path)
-	}
+	var changed []string
+	_, err := config.Update(l.path, func(f *config.File) error {
+		var err error
+		changed, err = f.Enable(names...)
+		return err
+	})
 	if err != nil {
 		l.mu.Unlock()
 		return nil, err
@@ -1384,15 +1398,12 @@ func (l *liveSet) metaEnable(ctx context.Context, names []string) ([]string, err
 
 func (l *liveSet) metaDisable(ctx context.Context, names []string) ([]string, error) {
 	l.mu.Lock()
-	f, err := config.Load(l.path)
-	if err != nil {
-		l.mu.Unlock()
-		return nil, err
-	}
-	changed, err := f.Disable(names...)
-	if err == nil {
-		err = f.Save(l.path)
-	}
+	var changed []string
+	_, err := config.Update(l.path, func(f *config.File) error {
+		var err error
+		changed, err = f.Disable(names...)
+		return err
+	})
 	if err != nil {
 		l.mu.Unlock()
 		return nil, err

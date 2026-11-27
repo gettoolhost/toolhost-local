@@ -3,7 +3,9 @@
 One file per environment: `toolhost.json`, resolved nearest-scope-first —
 `-c` → this folder's private env (`~/.toolhost/projects/<id>/`) →
 `./.toolhost/toolhost.json` → `~/.toolhost/toolhost.json`. Written `0600`, saved
-atomically (tmp+rename). Full example: `toolhost.example.json`.
+atomically (tmp+rename) under a lock in `~/.toolhost/locks/`; a save from a copy
+read before someone else's change is refused, never written over it. Full
+example: `toolhost.example.json`.
 
 Runtime state (OAuth grants, audit log, the agent request queue) lives in
 the env's **state dir**, never in this file — beside the config inside

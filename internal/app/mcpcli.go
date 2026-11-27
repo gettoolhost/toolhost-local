@@ -403,11 +403,16 @@ func approveWhole(ctx context.Context, path, name string, w io.Writer) error {
 		}
 		pins[q] = core.SchemaHash(t)
 	}
-	changed, err := f.Approve(pins)
-	if err != nil {
+	// The dial took a while: approve on a fresh read, under the lock.
+	var changed []string
+	if _, err := config.Update(path, func(f *config.File) error {
+		if _, ok := f.Backends[name]; !ok {
+			return fmt.Errorf("backend %q was removed while its tools were read — nothing approved", name)
+		}
+		var err error
+		changed, err = f.Approve(pins)
 		return err
-	}
-	if err := f.Save(path); err != nil {
+	}); err != nil {
 		return err
 	}
 	fmt.Fprintf(w, "approved %d tools on %s\n", len(changed), name)

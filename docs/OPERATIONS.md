@@ -77,7 +77,11 @@ retries. Every drop and reconnect is audited (`backend_error` /
 - Restart-required: `listen`, `token`, `audit_log`, `mode` — logged,
   current values kept.
 - Atomic saves (tmp+rename) mean the watcher never reads a torn write.
-  An invalid config keeps the current surface and audits `reload` + err.
+- An invalid config keeps the current surface and audits `reload` + err.
+- Every writer (the CLI, the agent's enable and disable, petitions and
+  verdicts) takes the file's lock first, waiting up to 10s for another
+  writer. A save from a stale read fails with `config changed on disk
+  since it was read — nothing written to <path>; run the command again`.
 - Modern stateless subscribers, legacy stateful clients, and stdio clients
   can receive `tools/list_changed`. The `gateway__discover`/`call`
   meta-tools provide a pull path when the client does not refresh.
@@ -90,6 +94,7 @@ retries. Every drop and reconnect is audited (`backend_error` /
 | `toolhost_tokens.json` | upstream OAuth grants (state dir) |
 | `toolhost_audit.jsonl` | append-only evidence (state dir) |
 | `toolhost_requests.json` | pending agent requests (state dir) |
+| `~/.toolhost/locks/*.lock` | write locks, one per config or request queue, keyed by the file's real path; empty, safe to leave |
 | `toolhost_serve.log` | service-mode stdout/stderr (beside config) |
 
 For the global env the state dir is `~/.toolhost/` itself; for a

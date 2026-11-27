@@ -4,6 +4,7 @@
 package config
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -131,7 +132,18 @@ type File struct {
 	// recent history is what introspection needs). Absent or non-positive
 	// means the default.
 	AuditMaxMB int `json:"audit_max_mb,omitempty"`
+
+	// read fingerprints the file this value was loaded from, so Save can
+	// refuse to write a stale snapshot over a newer file.
+	read snapshot
 }
+
+// snapshot names a file and the digest of the bytes read from it.
+type snapshot struct{ path, sum string }
+
+// ErrStale is a save refused because the file changed on disk after this
+// copy was read: writing it would undo someone else's change.
+var ErrStale = errors.New("config changed on disk since it was read")
 
 // Request is one agent-filed petition. Kind "tool" asks approval for a
 // discovered qualified name; kind "server" proposes a whole new backend —
@@ -191,7 +203,43 @@ func Load(path string) (*File, error) {
 	if err := f.validate(); err != nil {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}
+	f.read = snapshot{path: canonical(path), sum: digest(raw)}
 	return &f, nil
+}
+
+// Update is the read-modify-write for a config file. It holds the config
+// lock across load, fn and save, so no other toolhost writer can land in
+// between. fn must not wait on the network: dial first, then mutate.
+// A change that leaves the bytes as they were writes nothing.
+func Update(path string, fn func(*File) error) (*File, error) {
+	release, err := lockFile(configLock(path))
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	f, err := Load(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := fn(f); err != nil {
+		return nil, err
+	}
+	if err := f.saveLocked(path); err != nil {
+		return nil, err
+	}
+	return f, nil
+}
+
+func digest(raw []byte) string {
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
+func absPath(p string) string {
+	if abs, err := filepath.Abs(p); err == nil {
+		return abs
+	}
+	return filepath.Clean(p)
 }
 
 // ConfigHome is toolhost's canonical home — $TOOLHOST_HOME if set, else
@@ -320,17 +368,45 @@ func LoadRequests(cfgPath string) ([]Request, error) {
 	return reqs, nil
 }
 
-// SaveRequests writes the queue file (0600) into the env's state dir.
+// SaveRequests replaces the whole queue. It reads nothing first, so it is
+// for seeding a queue; anything that reads the queue and writes it back
+// goes through UpdateRequests.
 func SaveRequests(cfgPath string, reqs []Request) error {
+	return UpdateRequests(cfgPath, func([]Request) ([]Request, error) { return reqs, nil })
+}
+
+// errNoChange tells UpdateRequests the queue is already right: write nothing.
+var errNoChange = errors.New("no change")
+
+// UpdateRequests is the queue's read-modify-write. It holds the queue
+// lock across load, fn and write, so a petition the agent files and a
+// verdict the human gives at the same moment both land.
+func UpdateRequests(cfgPath string, fn func([]Request) ([]Request, error)) error {
+	release, err := lockFile(requestsLock(cfgPath))
+	if err != nil {
+		return err
+	}
+	defer release()
+	reqs, err := LoadRequests(cfgPath)
+	if err != nil {
+		return err
+	}
+	out, err := fn(reqs)
+	if errors.Is(err, errNoChange) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	raw, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		return err
+	}
 	p := RequestsPath(cfgPath)
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		return err
 	}
-	raw, err := json.MarshalIndent(reqs, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(p, append(raw, '\n'), 0o600)
+	return writeAtomic(p, append(raw, '\n'))
 }
 
 // AppendRequests queues qualified tool names (deduped, newest-last) in
@@ -338,10 +414,22 @@ func SaveRequests(cfgPath string, reqs []Request) error {
 // are refused: the request is already answered. A name a human denied is
 // refused too — denial is a verdict, not a speed bump.
 func AppendRequests(cfgPath string, approved map[string]bool, reason string, names ...string) ([]string, error) {
-	reqs, err := LoadRequests(cfgPath)
+	var added []string
+	err := UpdateRequests(cfgPath, func(reqs []Request) ([]Request, error) {
+		var err error
+		reqs, added, err = appendRequests(reqs, approved, reason, names)
+		if err == nil && len(added) == 0 {
+			err = errNoChange
+		}
+		return reqs, err
+	})
 	if err != nil {
 		return nil, err
 	}
+	return added, nil
+}
+
+func appendRequests(reqs []Request, approved map[string]bool, reason string, names []string) ([]Request, []string, error) {
 	have := make(map[string]bool, len(reqs))
 	denied := map[string]string{}
 	for _, r := range reqs {
@@ -353,16 +441,16 @@ func AppendRequests(cfgPath string, approved map[string]bool, reason string, nam
 	var added []string
 	for _, n := range names {
 		if _, _, err := namespace.Split(n); err != nil {
-			return nil, fmt.Errorf("%q is not a qualified name (want backend__tool): %w", n, err)
+			return nil, nil, fmt.Errorf("%q is not a qualified name (want backend__tool): %w", n, err)
 		}
 		if approved[n] {
-			return nil, fmt.Errorf("%q is already approved — enable it with gateway__enable", n)
+			return nil, nil, fmt.Errorf("%q is already approved — enable it with gateway__enable", n)
 		}
 		if why, wasDenied := denied[n]; wasDenied {
 			if why == "" {
 				why = "no reason given"
 			}
-			return nil, fmt.Errorf("%q was denied by the human — %s", n, why)
+			return nil, nil, fmt.Errorf("%q was denied by the human — %s", n, why)
 		}
 		if have[n] {
 			continue
@@ -371,10 +459,7 @@ func AppendRequests(cfgPath string, approved map[string]bool, reason string, nam
 		have[n] = true
 		added = append(added, n)
 	}
-	if len(added) == 0 {
-		return added, nil
-	}
-	return added, SaveRequests(cfgPath, reqs)
+	return reqs, added, nil
 }
 
 // AppendServerRequest queues a proposed backend — the agent supplies the
@@ -390,60 +475,56 @@ func AppendServerRequest(cfgPath string, f *File, r Request) error {
 	if _, exists := f.Backends[r.Name]; exists {
 		return fmt.Errorf("backend %q is already configured — its tools are discoverable, request tools on it instead", r.Name)
 	}
-	reqs, err := LoadRequests(cfgPath)
-	if err != nil {
-		return err
-	}
-	for _, q := range reqs {
-		if q.Name != r.Name || q.Kind != RequestServer {
-			continue
-		}
-		if q.Denied {
-			why := q.DenyReason
-			if why == "" {
-				why = "no reason given"
+	return UpdateRequests(cfgPath, func(reqs []Request) ([]Request, error) {
+		for _, q := range reqs {
+			if q.Name != r.Name || q.Kind != RequestServer {
+				continue
 			}
-			return fmt.Errorf("server %q was denied by the human — %s", r.Name, why)
+			if q.Denied {
+				why := q.DenyReason
+				if why == "" {
+					why = "no reason given"
+				}
+				return nil, fmt.Errorf("server %q was denied by the human — %s", r.Name, why)
+			}
+			return nil, errNoChange // already queued — a re-ask adds nothing
 		}
-		return nil // already queued — a re-ask adds nothing
-	}
-	r.Kind = RequestServer
-	r.At = time.Now().UTC()
-	reqs = append(reqs, r)
-	return SaveRequests(cfgPath, reqs)
+		r.Kind = RequestServer
+		r.At = time.Now().UTC()
+		return append(reqs, r), nil
+	})
 }
 
 // DenyRequest marks one queued petition denied — the verdict stays on
 // record so the agent sees it rather than re-asking.
 func DenyRequest(cfgPath, name, reason string) error {
-	reqs, err := LoadRequests(cfgPath)
-	if err != nil {
-		return err
-	}
-	for i, r := range reqs {
-		if r.Name == name && !r.Denied {
-			reqs[i].Denied = true
-			reqs[i].DenyReason = reason
-			return SaveRequests(cfgPath, reqs)
+	return UpdateRequests(cfgPath, func(reqs []Request) ([]Request, error) {
+		for i, r := range reqs {
+			if r.Name == name && !r.Denied {
+				reqs[i].Denied = true
+				reqs[i].DenyReason = reason
+				return reqs, nil
+			}
 		}
-	}
-	return fmt.Errorf("no pending request %q", name)
+		return nil, fmt.Errorf("no pending request %q", name)
+	})
 }
 
 // RemoveRequest drops a queue entry — the cleanup after --accept or an
 // explicit dismissal.
 func RemoveRequest(cfgPath, name string) error {
-	reqs, err := LoadRequests(cfgPath)
-	if err != nil {
-		return err
-	}
-	kept := reqs[:0]
-	for _, r := range reqs {
-		if r.Name != name {
-			kept = append(kept, r)
+	return UpdateRequests(cfgPath, func(reqs []Request) ([]Request, error) {
+		kept := []Request{}
+		for _, r := range reqs {
+			if r.Name != name {
+				kept = append(kept, r)
+			}
 		}
-	}
-	return SaveRequests(cfgPath, kept)
+		if len(kept) == len(reqs) {
+			return nil, errNoChange
+		}
+		return kept, nil
+	})
 }
 
 // PendingRequests filters the queue to undecided petitions.
@@ -472,19 +553,18 @@ func DeniedSet(reqs []Request) map[string]string {
 // RemoveAnsweredRequests drops queue entries whose names are now approved
 // — an approval is the answer to the request.
 func RemoveAnsweredRequests(cfgPath string, approved map[string]bool) {
-	reqs, err := LoadRequests(cfgPath)
-	if err != nil || len(reqs) == 0 {
-		return
-	}
-	kept := reqs[:0]
-	for _, r := range reqs {
-		if !approved[r.Name] {
-			kept = append(kept, r)
+	_ = UpdateRequests(cfgPath, func(reqs []Request) ([]Request, error) {
+		kept := []Request{}
+		for _, r := range reqs {
+			if !approved[r.Name] {
+				kept = append(kept, r)
+			}
 		}
-	}
-	if len(kept) != len(reqs) {
-		_ = SaveRequests(cfgPath, kept)
-	}
+		if len(kept) == len(reqs) {
+			return nil, errNoChange
+		}
+		return kept, nil
+	})
 }
 
 // RequestSet is the lookup form — name → pending (undecided) request.
@@ -768,17 +848,59 @@ func (b *Backend) validateAuth(name string) error {
 }
 
 // Save writes the config back atomically (0600 — it carries the token) —
-// tmp+rename so the serve watcher never reads a torn file.
+// tmp+rename so the serve watcher never reads a torn file. A copy that
+// came from Load is written only if the file still holds the bytes it was
+// read from; otherwise Save returns ErrStale and writes nothing. A File
+// built in memory has no snapshot and replaces whatever is there.
+// Read-modify-write callers should use Update.
 func (f *File) Save(path string) error {
+	release, err := lockFile(configLock(path))
+	if err != nil {
+		return err
+	}
+	defer release()
+	return f.saveLocked(path)
+}
+
+// saveLocked is Save for a caller already holding the config lock.
+func (f *File) saveLocked(path string) error {
 	raw, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, append(raw, '\n'), 0o600); err != nil {
+	raw = append(raw, '\n')
+	abs := canonical(path)
+	cur, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read config: %w", err)
+	}
+	exists := err == nil
+	if f.read.sum != "" && f.read.path == abs && (!exists || digest(cur) != f.read.sum) {
+		return fmt.Errorf("%w — nothing written to %s; run the command again", ErrStale, path)
+	}
+	if exists && bytes.Equal(cur, raw) {
+		f.read = snapshot{path: abs, sum: digest(raw)}
+		return nil
+	}
+	if err := writeAtomic(path, raw); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	f.read = snapshot{path: abs, sum: digest(raw)}
+	return nil
+}
+
+// writeAtomic replaces path with raw (0600) by tmp+rename, so a reader
+// sees the old file or the new one, never half of either.
+func writeAtomic(path string, raw []byte) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // ApprovedSet is the lookup form Resolve consumes.
