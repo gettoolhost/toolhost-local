@@ -961,12 +961,10 @@ func (f *File) IsEnabled(qualified string) bool {
 // Enabled names must be approved first; enabling is never a backdoor
 // around approval.
 func (f *File) Enable(names ...string) ([]string, error) {
-	if f.Enabled == nil {
-		return nil, nil
-	}
+	// Validate before anything else: with no enabled list every approved
+	// tool is already on, but a bad or unapproved name is still refused —
+	// a silent no-op would read as success to the agent.
 	approved := f.ApprovedSet()
-	set, _ := f.EnabledSet()
-	var added []string
 	for _, n := range names {
 		if _, _, err := namespace.Split(n); err != nil {
 			return nil, fmt.Errorf("%q is not a qualified name (want backend__tool): %w", n, err)
@@ -974,6 +972,13 @@ func (f *File) Enable(names ...string) ([]string, error) {
 		if !approved[n] {
 			return nil, fmt.Errorf("%q is not approved — run: toolhost approve %s", n, n)
 		}
+	}
+	if f.Enabled == nil {
+		return nil, nil
+	}
+	set, _ := f.EnabledSet()
+	var added []string
+	for _, n := range names {
 		if set[n] {
 			continue
 		}
