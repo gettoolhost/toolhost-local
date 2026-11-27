@@ -32,7 +32,7 @@ type Upstream interface {
 }
 
 // ToolInfo is one catalog entry — a discovered tool plus its governance
-// state, as reported by the gateway's own toolhost__* meta-tools.
+// state, as reported by the gateway's own gateway__* verbs.
 type ToolInfo struct {
 	Qualified   string `json:"qualified"`
 	Description string `json:"description,omitempty"`

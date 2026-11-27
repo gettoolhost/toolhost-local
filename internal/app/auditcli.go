@@ -8,10 +8,9 @@ import (
 	"github.com/gettoolhost/toolhost-local/internal/config"
 )
 
-// Audit prints the tail of the gateway's JSONL audit log — the same
-// bounded read toolhost__audit exposes to agents, for the human at the
-// shell. It reads the file directly: the gateway need not be running.
-// limit <= 0 or > 500 reads the default tail, mirroring metaAudit.
+// Audit prints the tail of the gateway's JSONL audit log for the human at
+// the shell. Agents have no audit tool. It reads the file directly: the
+// gateway need not be running. limit <= 0 or > 500 reads the default tail.
 func Audit(cfgPath string, limit int, kind string, w io.Writer) error {
 	f, err := config.Load(cfgPath)
 	if err != nil {

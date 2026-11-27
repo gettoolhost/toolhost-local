@@ -242,7 +242,7 @@ type attachTarget struct {
 	// doesn't fit the client (e.g. VS Code requires "type" on stdio).
 	entry func(url, token, bin, cfg, urlField string, stdio bool) map[string]any
 	// skillDir is the client's user-level skill directory — the one place
-	// a SKILL.md teaching the toolhost__* control plane can live without
+	// a SKILL.md teaching the gateway__* control plane can live without
 	// editing files the user owns. Nil: no safe provisioning point.
 	skillDir func() (string, error)
 }

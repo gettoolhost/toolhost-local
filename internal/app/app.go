@@ -827,7 +827,7 @@ func toolCount(n int) string {
 // liveSet is the currently-served backend pool: sessions keyed by namespace
 // plus the config that produced each, so a reload keeps unchanged sessions
 // and re-dials only what changed. mu serializes the watch goroutine and the
-// toolhost__* meta-tool handlers — both mutate the pool.
+// gateway__* verb handlers — both mutate the pool.
 type liveSet struct {
 	mu   sync.Mutex
 	path string
@@ -1542,7 +1542,7 @@ func auditTail(path string, limit int, kind string) ([]core.Event, error) {
 			return nil, err
 		}
 		// Live segment deleted but the rotated .1 remains — return its
-		// history rather than erroring out of toolhost__audit.
+		// history rather than erroring out of `toolhost audit`.
 		if len(lines) == 0 {
 			return nil, nil
 		}
