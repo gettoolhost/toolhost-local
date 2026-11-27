@@ -61,8 +61,14 @@ func Qualify(up Upstream, name string) (string, error) {
 			strings.HasPrefix(name, "toolhost"+namespace.Separator) {
 			return "", fmt.Errorf("%q is the inner gateway's control plane — not forwarded", name)
 		}
-		if _, _, err := namespace.Split(name); err != nil {
+		ns, tool, err := namespace.Split(name)
+		if err != nil {
 			return "", fmt.Errorf("passthrough upstream tool %q is not a qualified name: %w", name, err)
+		}
+		// Trusted for shape, not for wire safety: re-join so a federated
+		// name meets the same charset and length rules as one we build.
+		if _, err := namespace.Join(ns, tool); err != nil {
+			return "", fmt.Errorf("passthrough upstream tool %q: %w", name, err)
 		}
 		return name, nil
 	}
