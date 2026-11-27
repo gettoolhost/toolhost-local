@@ -13,7 +13,9 @@ The invariant: **`discovered ≠ approved ≠ enabled`**.
   there is no check to bypass. `gateway__call` on a non-enabled name
   audits `tool_forbidden` and returns a precise reason (unknown /
   discovered-not-approved / approved-but-disabled / schema-drifted /
-  backend-down / backend-parked).
+  backend-down / backend-parked). A direct `tools/call` for a name that
+  isn't on the surface is refused by the protocol layer and audited
+  `tool_forbidden` too.
 - `core.Resolve` is the only place visibility is decided.
 
 ## Schema pinning

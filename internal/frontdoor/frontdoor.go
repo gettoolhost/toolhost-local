@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -31,6 +32,10 @@ type Server struct {
 
 	mu   sync.Mutex // guards live — Reload runs on the watcher goroutine
 	live map[string]core.ResolvedTool
+
+	// verbs names the gateway__ tools. Written while the server is built,
+	// read-only after.
+	verbs map[string]bool
 }
 
 // Meta wires the gateway's own control-plane tools — registered under the
@@ -130,7 +135,8 @@ func buildServer(res *core.Resolution, sink core.AuditSink, meta *Meta) *Server 
 	}, &mcp.ServerOptions{Capabilities: &mcp.ServerCapabilities{
 		Tools: &mcp.ToolCapabilities{ListChanged: true},
 	}})
-	s := &Server{mcp: srv, sink: sink, live: map[string]core.ResolvedTool{}}
+	s := &Server{mcp: srv, sink: sink, live: map[string]core.ResolvedTool{}, verbs: map[string]bool{}}
+	srv.AddReceivingMiddleware(s.auditProbes)
 	if meta != nil {
 		s.onCallErr = meta.CallErr
 	}
@@ -188,6 +194,56 @@ func (s *Server) addTool(rt core.ResolvedTool) {
 	s.live[rt.Qualified] = rt
 }
 
+// auditProbes records a tools/call for a name the gateway doesn't serve:
+// an agent reaching for a hidden tool by name. The SDK refuses such a call
+// before any handler runs, so without this it would leave no record.
+// gateway__call records its own refusals; a served tool's or a verb's own
+// error is not a probe.
+func (s *Server) auditProbes(next mcp.MethodHandler) mcp.MethodHandler {
+	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+		res, err := next(ctx, method, req)
+		if err == nil || method != "tools/call" {
+			return res, err
+		}
+		call, ok := req.(*mcp.CallToolRequest)
+		if !ok || call.Params == nil {
+			return res, err
+		}
+		name := call.Params.Name
+		s.mu.Lock()
+		_, served := s.live[name]
+		s.mu.Unlock()
+		if !served && !s.verbs[name] {
+			s.sink.Record(core.Event{TS: time.Now(), Kind: core.EventToolForbidden, Tool: clip(name)})
+		}
+		return res, err
+	}
+}
+
+// maxRecordedName bounds a tool name the agent chose before it is audited.
+// Real names fit easily; a longer one is a probe, and its prefix is enough.
+const maxRecordedName = 256
+
+// clip keeps at most maxRecordedName bytes of s, cut on a rune boundary.
+func clip(s string) string {
+	if len(s) <= maxRecordedName {
+		return s
+	}
+	cut := maxRecordedName
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
+}
+
+// verbRegistry adds a gateway__ verb and remembers its name for auditProbes.
+type verbRegistry struct{ s *Server }
+
+func (v verbRegistry) AddTool(t *mcp.Tool, h mcp.ToolHandler) {
+	v.s.verbs[t.Name] = true
+	v.s.mcp.AddTool(t, h)
+}
+
 // Reload swaps the served tool set in place: tools removed or re-pointed at
 // a reconnected upstream are unregistered, new ones added. The SDK emits
 // notifications/tools/list_changed to subscribed modern clients and legacy
@@ -225,7 +281,7 @@ func (s *Server) Reload(res *core.Resolution) {
 // in live, so Reload can never drop them — the control plane survives
 // every surface swap.
 func (s *Server) addMetaTools(m *Meta) {
-	srv := s.mcp
+	srv := verbRegistry{s}
 
 	srv.AddTool(&mcp.Tool{
 		Name: "gateway__discover",
@@ -321,7 +377,7 @@ func (s *Server) addMetaTools(m *Meta) {
 		rt, ok := s.live[a.Name]
 		s.mu.Unlock()
 		if !ok {
-			s.sink.Record(core.Event{TS: time.Now(), Kind: core.EventToolForbidden, Tool: a.Name})
+			s.sink.Record(core.Event{TS: time.Now(), Kind: core.EventToolForbidden, Tool: clip(a.Name)})
 			info, found := m.Status(a.Name)
 			switch {
 			case found && info.Drifted:

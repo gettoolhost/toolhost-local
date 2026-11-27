@@ -205,8 +205,17 @@ func TestGovernedCallEndToEnd(t *testing.T) {
 	if !strings.Contains(string(raw), `"kind":"tool_call"`) || !strings.Contains(string(raw), `"tool":"up__echo"`) {
 		t.Fatalf("audit log missing the governed call record:\n%s", raw)
 	}
-	if strings.Contains(string(raw), "up__secret") {
-		t.Fatalf("audit log records the unapproved call attempt:\n%s", raw)
+	// The unapproved tool never dispatched: no tool_call names it. The
+	// attempt itself is evidence, recorded once as tool_forbidden.
+	var secret []string
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		var ev struct{ Kind, Tool string }
+		if json.Unmarshal([]byte(line), &ev) == nil && ev.Tool == "up__secret" {
+			secret = append(secret, ev.Kind)
+		}
+	}
+	if len(secret) != 1 || secret[0] != "tool_forbidden" {
+		t.Fatalf("records for up__secret = %v, want exactly [tool_forbidden] (and never tool_call):\n%s", secret, raw)
 	}
 }
 
