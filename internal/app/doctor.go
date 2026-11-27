@@ -115,7 +115,7 @@ func Doctor(ctx context.Context, cfgPath string, w io.Writer) error {
 		if b.Auth != nil && b.Auth.Type == "oauth" {
 			ok(tokens != nil && tokens.Get(name) != nil,
 				fmt.Sprintf("backend %-10s oauth grant stored", name),
-				fmt.Sprintf("backend %s: oauth grant missing — run toolhost auth %s", name, name))
+				fmt.Sprintf("backend %s: oauth grant missing — run toolhost mcp auth %s", name, name))
 		}
 	}
 	if len(f.Backends) == 0 {

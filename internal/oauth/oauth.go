@@ -1,7 +1,7 @@
 // Package oauth is the driven adapter for upstream OAuth: it builds the
 // go-sdk OAuthHandlers (client-credentials via extauth, auth-code+PKCE via
 // auth.AuthorizationCodeHandler) and owns the on-disk token store that lets
-// `serve` run unattended after `toolhost auth` granted once.
+// `serve` run unattended after `toolhost mcp auth` granted once.
 package oauth
 
 import (
@@ -114,7 +114,7 @@ func (s *Store) flushLocked() error {
 
 // Source returns a token source for a stored grant, refreshing and
 // re-persisting as needed. Nil when nothing is stored — callers treat nil
-// as "needs `toolhost auth`".
+// as "needs `toolhost mcp auth`".
 func (s *Store) Source(ctx context.Context, name string) oauth2.TokenSource {
 	st := s.Get(name)
 	if st == nil {
@@ -181,7 +181,7 @@ func (p *persistSource) Token() (*oauth2.Token, error) {
 // NewHandler builds the go-sdk OAuthHandler for a backend's auth block —
 // nil for auth modes that don't need one (none/bearer get their header from
 // the base client instead). interactive=false installs a fetcher that fails
-// fast ("run toolhost auth") so serve/discover never pop a browser. open is
+// fast ("run toolhost mcp auth") so serve/discover never pop a browser. open is
 // the browser launcher — nil picks the platform default.
 func NewHandler(ctx context.Context, name string, a *config.Auth, store *Store, interactive bool, open func(string) error, out io.Writer) (auth.OAuthHandler, error) {
 	if a == nil {
@@ -271,13 +271,13 @@ func (s *Store) newPersistingSource(name string) func(context.Context, *oauth2.C
 // fails closed with the remedy instead of silently hanging a serve.
 func failFetcher(name string) auth.AuthorizationCodeFetcher {
 	return func(context.Context, *auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
-		return nil, fmt.Errorf("backend %q needs an OAuth grant — run: toolhost auth %s", name, name)
+		return nil, fmt.Errorf("backend %q needs an OAuth grant — run: toolhost mcp auth %s", name, name)
 	}
 }
 
 // AuthorizeOnce drives a handler against a real 401 — the same probe the
 // streamable transport performs internally on connect, invoked explicitly so
-// `toolhost auth` (and SSE, which has no OAuthHandler seam) can run the flow.
+// `toolhost mcp auth` (and SSE, which has no OAuthHandler seam) can run the flow.
 func AuthorizeOnce(ctx context.Context, endpoint string, h auth.OAuthHandler, hc *http.Client) error {
 	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"toolhost","version":"0"}}}`
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(body))

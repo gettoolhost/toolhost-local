@@ -41,7 +41,7 @@ type Options struct {
 	// grants — an oauth backend then can only authorize interactively.
 	Tokens *oauth.Store
 	// Interactive permits the oauth fetcher to open a browser and wait on a
-	// loopback callback (`toolhost auth`); serve/discover pass false so a
+	// loopback callback (`toolhost mcp auth`); serve/discover pass false so a
 	// missing grant fails fast instead of surprising a terminal.
 	Interactive bool
 	// OpenURL launches the authorization URL — nil uses the platform opener.
@@ -329,7 +329,7 @@ func sameOriginRedirects(req *http.Request, via []*http.Request) error {
 
 // sseClient builds the HTTP client for an SSE backend, resolving auth the
 // SDK can't: client_credentials drives its own grant against the probed 401,
-// oauth reuses the stored grant (or points at `toolhost auth`).
+// oauth reuses the stored grant (or points at `toolhost mcp auth`).
 func sseClient(ctx context.Context, name string, cfg *config.Backend, opts *Options) (*http.Client, error) {
 	// Every SSE request goes through the origin guard: the server's
 	// endpoint event can name any URL, and nothing may follow it elsewhere.
@@ -364,11 +364,11 @@ func sseClient(ctx context.Context, name string, cfg *config.Backend, opts *Opti
 
 	case "oauth":
 		if opts.Tokens == nil {
-			return nil, fmt.Errorf("backend %q needs an OAuth grant — run: toolhost auth %s", name, name)
+			return nil, fmt.Errorf("backend %q needs an OAuth grant — run: toolhost mcp auth %s", name, name)
 		}
 		ts := opts.Tokens.Source(ctx, name)
 		if ts == nil {
-			return nil, fmt.Errorf("backend %q needs an OAuth grant — run: toolhost auth %s", name, name)
+			return nil, fmt.Errorf("backend %q needs an OAuth grant — run: toolhost mcp auth %s", name, name)
 		}
 		return guarded(&oauth2.Transport{Source: ts, Base: base}), nil
 	}

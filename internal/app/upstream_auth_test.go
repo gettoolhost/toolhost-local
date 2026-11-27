@@ -307,8 +307,8 @@ func TestOAuthMissingGrantFailsClosed(t *testing.T) {
 		Transport: "http", URL: as.srv.URL + "/mcp",
 		Auth: &config.Auth{Type: "oauth", RedirectURL: "http://127.0.0.1:1/callback"},
 	}, &upstream.Options{Tokens: mustStore(t)})
-	if err == nil || !strings.Contains(err.Error(), "toolhost auth") {
-		t.Fatalf("want 'run toolhost auth' error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "toolhost mcp auth") {
+		t.Fatalf("want 'run toolhost mcp auth' error, got %v", err)
 	}
 	if as.authorizeHit {
 		t.Fatal("non-interactive connect ran the browser flow")

@@ -494,8 +494,8 @@ func Auth(ctx context.Context, path, name string, w io.Writer) error {
 }
 
 // Logout drops a backend's stored upstream grant — the counterpart of
-// `toolhost auth`. Serve then fails closed on that backend until the next
-// `toolhost auth <backend>`.
+// `toolhost mcp auth`. Serve then fails closed on that backend until the next
+// `toolhost mcp auth <backend>`.
 func Logout(path, name string, w io.Writer) error {
 	f, err := config.Load(path)
 	if err != nil {

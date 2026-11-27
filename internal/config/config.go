@@ -72,7 +72,7 @@ type Auth struct {
 	// Authorization: Bearer — the API-key shape), "client_credentials"
 	// (machine OAuth; token endpoint discovered via the server's Protected
 	// Resource Metadata), "oauth" (interactive auth-code + PKCE; run
-	// `toolhost auth <backend>` to grant).
+	// `toolhost mcp auth <backend>` to grant).
 	Type string `json:"type"`
 
 	// bearer:
