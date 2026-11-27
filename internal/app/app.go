@@ -1032,8 +1032,8 @@ func (l *liveSet) reload() {
 
 // publish is the shared tail of reload and reconnect: resolve the live
 // pool against f's policy, evidence skips and schema drift, swap the front
-// door. Returns the served tool count, or -1 when a failed resolve keeps
-// the current surface. Callers hold l.mu.
+// door. Returns the served tool count, or -1 when resolve failed and the
+// surface was emptied. Callers hold l.mu.
 func (l *liveSet) publish(f *config.File) int {
 	ups := make([]core.Upstream, 0, len(l.ups))
 	for _, name := range sortedKeys(l.ups) {
@@ -1042,8 +1042,15 @@ func (l *liveSet) publish(f *config.File) int {
 	enabledSet, _ := f.EnabledSet()
 	res, err := core.Resolve(ups, f.ApprovedSet(), enabledSet, f.ApprovedSchemas)
 	if err != nil {
-		slog.Default().Warn("resolve failed — keeping current surface", "err", err)
+		// Fail closed. The surface on the wire was resolved against an
+		// older policy — it can hold approvals revoked since — so it must
+		// not outlive a resolve that failed. Serve no governed tools until
+		// the next publish succeeds; the gateway__* verbs stay, so the
+		// agent can still discover and ask. Boot refuses the same error.
+		slog.Default().Warn("resolve failed — serving no tools until it resolves", "err", err)
 		l.sink.Record(core.Event{TS: time.Now(), Kind: core.EventReload, Err: err.Error()})
+		fmt.Fprintf(l.w, "resolve failed: %s — serving no tools until it resolves\n", err)
+		l.fd.Reload(&core.Resolution{})
 		return -1
 	}
 	for _, s := range res.Skipped {
