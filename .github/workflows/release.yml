@@ -28,7 +28,7 @@ jobs:
           f=".github/release-notes/${GITHUB_REF_NAME}.md"
           if [ -f "$f" ]; then echo "args=--release-notes=$f" >> "$GITHUB_OUTPUT"; fi
       - name: Build + draft release
-        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
           version: "v2.20.3"
           args: release --clean ${{ steps.notes.outputs.args }}
