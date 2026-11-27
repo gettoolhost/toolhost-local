@@ -94,4 +94,4 @@ flowchart LR
 
 ## Deliberately absent
 
-An OAuth authorization server of our own, per-principal upstream credentials, tenancy, policy beyond the approve-list, rate limiting, schema pinning, config generations, console, portal, Postgres. Add them when a real need appears.
+An OAuth authorization server of our own, per-principal upstream credentials, tenancy, policy beyond the approve-list, rate limiting, config generations, console, portal, Postgres. Add them when a real need appears.
