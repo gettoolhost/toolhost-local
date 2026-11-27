@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -48,9 +49,19 @@ type Options struct {
 	OpenURL func(string) error
 	// Out is where the interactive fetcher prints the authorization URL.
 	Out io.Writer
-	// DefaultCallTimeout bounds upstream calls for backends without their
-	// own call_timeout. Zero means rely on the caller's deadline alone.
-	DefaultCallTimeout time.Duration
+	// defaultCallTimeout bounds upstream calls for backends without their
+	// own call_timeout; zero means the caller's deadline alone. Atomic: a
+	// hot reload sets it while calls run on the sessions it kept.
+	defaultCallTimeout atomic.Int64
+}
+
+// SetDefaultCallTimeout sets the call_timeout for backends without their
+// own. Safe while calls are in flight.
+func (o *Options) SetDefaultCallTimeout(d time.Duration) { o.defaultCallTimeout.Store(int64(d)) }
+
+// DefaultCallTimeout is the call_timeout for backends without their own.
+func (o *Options) DefaultCallTimeout() time.Duration {
+	return time.Duration(o.defaultCallTimeout.Load())
 }
 
 // Backend is a connected upstream MCP server.
@@ -121,7 +132,7 @@ func (b *Backend) Call(ctx context.Context, tool string, args json.RawMessage) (
 	// hot-reloaded call_timeout reaches sessions that were kept.
 	timeout := b.callTimeout
 	if timeout <= 0 && b.opts != nil {
-		timeout = b.opts.DefaultCallTimeout
+		timeout = b.opts.DefaultCallTimeout()
 	}
 	if timeout > 0 {
 		var tcancel context.CancelFunc

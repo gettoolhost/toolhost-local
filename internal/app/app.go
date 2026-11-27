@@ -759,7 +759,7 @@ func Serve(ctx context.Context, path string, w io.Writer, stdio bool) error {
 		w:     w,
 		ups:   map[string]core.Upstream{},
 		cfgs:  map[string]*config.Backend{},
-		opts:  &upstream.Options{Tokens: tokens, Out: io.Discard, DefaultCallTimeout: callTimeout(f)},
+		opts:  newOptions(tokens, callTimeout(f)),
 		token: f.Token, listen: f.Listen, auditLog: auditLog,
 		mode:        f.Mode,
 		ctx:         ctx,
@@ -940,7 +940,7 @@ func (l *liveSet) reload() {
 		fmt.Fprintln(l.w, "reload: listen/token/audit_log/mode changes take effect on restart — keeping current values")
 	}
 	// call_timeout is hot-reloadable — it applies per call, not per session.
-	l.opts.DefaultCallTimeout = callTimeout(f)
+	l.opts.SetDefaultCallTimeout(callTimeout(f))
 
 	// Phase 1: compute the dial set and evict the dead/removed under lock.
 	toDial := map[string]*config.Backend{}
@@ -1611,7 +1611,7 @@ func ConnectBackends(ctx context.Context, f *config.File, tokens *oauth.Store, s
 	}
 	var ups []core.Upstream
 	errs := map[string]error{}
-	opts := &upstream.Options{Tokens: tokens, Out: io.Discard, DefaultCallTimeout: callTimeout(f)}
+	opts := newOptions(tokens, callTimeout(f))
 	for _, name := range sortedKeys(f.Backends) {
 		if f.Backends[name].Disabled {
 			continue
@@ -1633,6 +1633,14 @@ func ConnectBackends(ctx context.Context, f *config.File, tokens *oauth.Store, s
 // callTimeout parses the configured bound; config validation already ran,
 // so an unparsable value can't arrive — the fallback is the documented
 // default anyway.
+// newOptions is the dial options serve and the CLI share: the token store,
+// no interactive output, and the config's default call_timeout.
+func newOptions(tokens *oauth.Store, timeout time.Duration) *upstream.Options {
+	o := &upstream.Options{Tokens: tokens, Out: io.Discard}
+	o.SetDefaultCallTimeout(timeout)
+	return o
+}
+
 func callTimeout(f *config.File) time.Duration {
 	if d, err := time.ParseDuration(f.CallTimeout); err == nil && d > 0 {
 		return d

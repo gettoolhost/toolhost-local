@@ -617,7 +617,7 @@ func TestCallTimeout(t *testing.T) {
 		t.Helper()
 		cfg := &config.Backend{Transport: "http", URL: up.URL, CallTimeout: backendTimeout}
 		b, err := upstream.Connect(context.Background(), "up", cfg,
-			&upstream.Options{DefaultCallTimeout: defaultTimeout})
+			withCallTimeout(defaultTimeout))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -937,4 +937,10 @@ func TestStdioServeEndToEnd(t *testing.T) {
 	if text := called.Content[0].(*mcp.TextContent).Text; text != "echo:pipe" {
 		t.Fatalf("want echo:pipe, got %q", text)
 	}
+}
+
+func withCallTimeout(d time.Duration) *upstream.Options {
+	o := &upstream.Options{}
+	o.SetDefaultCallTimeout(d)
+	return o
 }
